@@ -1,0 +1,13 @@
+sample,condition,batch,patient,treatment_time
+C1,control,batch_A,patient_1,0
+C2,control,batch_A,patient_2,0
+C3,control,batch_A,patient_3,0
+C4,control,batch_B,patient_4,0
+LKO1,treated,batch_A,patient_1,24
+LKO2,treated,batch_B,patient_2,24
+LKO3,treated,batch_B,patient_3,24
+LKO4,treated,batch_B,patient_4,24
+INT1,intermediate,batch_A,patient_1,12
+INT2,intermediate,batch_B,patient_2,12
+INT3,intermediate,batch_B,patient_3,12
+INT4,intermediate,batch_B,patient_4,12

@@ -1,0 +1,80 @@
+name: API tests
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      R_LIBS_USER: ${{ github.workspace }}/.R-library
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v5
+
+      - name: Set up R
+        uses: r-lib/actions/setup-r@v2
+        with:
+          use-public-rspm: true
+
+      - name: Get R version for cache key
+        id: r-version
+        run: echo "version=$(Rscript -e 'cat(getRversion())')" >> "$GITHUB_OUTPUT"
+
+      - name: Create R library directory
+        run: mkdir -p "$R_LIBS_USER"
+
+      - name: Cache R packages
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.R-library
+          key: ${{ runner.os }}-r-${{ steps.r-version.outputs.version }}-${{ hashFiles('.github/workflows/api-tests.yml') }}
+          restore-keys: |
+            ${{ runner.os }}-r-${{ steps.r-version.outputs.version }}-
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes \
+            cmake \
+            libcurl4-openssl-dev \
+            libssl-dev \
+            libxml2-dev
+
+      - name: Install R dependencies
+        run: |
+          Rscript -e 'install.packages(c(
+            "BiocManager", "data.table", "DBI", "digest", "dplyr", "fst",
+            "jsonlite", "liteq", "mirai", "nanonext", "openssl", "readxl",
+            "RestRserve", "RSQLite", "uuid", "yaml"
+          ), repos = "https://cloud.r-project.org")'
+          Rscript -e 'BiocManager::install(
+            c(
+              "DESeq2", "S4Vectors", "SummarizedExperiment",
+              "edgeR", "limma", "clusterProfiler"
+            ),
+            ask = FALSE,
+            update = FALSE
+          )'
+
+      - name: Parse R source and OpenAPI specification
+        run: |
+          Rscript -e 'files <- list.files("api", pattern = "[.]R$", recursive = TRUE, full.names = TRUE); invisible(lapply(files, parse)); invisible(yaml::read_yaml("openapi.yaml")); cat(sprintf("Parsed %d R files and OpenAPI YAML\n", length(files)))'
+
+      - name: Run API tests
+        run: |
+          set -e
+          for test_file in api/tests/test_*.R; do
+            echo "::group::${test_file}"
+            Rscript "$test_file"
+            echo "::endgroup::"
+          done

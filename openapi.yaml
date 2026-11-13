@@ -1,0 +1,1843 @@
+openapi: 3.2.0
+info:
+  title: Genlyzer API
+  description: |
+    RESTful API for differential expression analysis and gene set enrichment analysis.
+
+    Genlyzer provides tools for analyzing RNA-seq count data, performing differential
+    expression analysis using DESeq2 and Limma-Voom, conducting
+    gene set enrichment analysis (GSEA) and over-representation analysis (ORA).
+
+    All state is persisted server-side in `session_data/<analysis_id>/` directories.
+  version: 1.0.0
+  license:
+    name: MIT
+    url: https://github.com/Genlyzer/Genlyzer/blob/main/LICENSE
+  contact:
+    name: Genlyzer
+    url: https://github.com/Genlyzer/Genlyzer
+
+servers:
+  - url: http://localhost:8080/v1
+    description: Development server
+  - url: https://genlyzer.example.com/appv2/v1
+    description: Production server (nginx strips the /appv2 prefix)
+
+paths:
+  /versions:
+    get:
+      operationId: getVersions
+      summary: Get database and software versions
+      description: |
+        Returns the current version information for the annotation databases
+        used by the application (e.g., Ensembl GTF, MSigDB, GO, GOA, MGI),
+        grouped by organism. This powers the footer "versions" modal.
+      tags:
+        - System
+      responses:
+        '200':
+          description: Database versions
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VersionsResponse'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /build-info:
+    get:
+      operationId: getBuildInfo
+      summary: Get API build identification metadata
+      description: |
+        Returns optional source revision, artifact digest, and provenance URL
+        supplied to the API process by the deployment environment. This is
+        informational metadata only. The API does not verify its own running
+        artifact or cryptographically validate the provenance; independently
+        verify the published CI attestation and deployment record.
+      tags:
+        - System
+      responses:
+        '200':
+          description: Build identification metadata
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BuildInfoResponse'
+
+  /analyses:
+    post:
+      operationId: createAnalysis
+      summary: Create a new analysis session
+      description: |
+        Creates a new analysis session and returns a unique analysis ID.
+        The analysis ID must be used for all subsequent operations.
+
+        With `?demo=true`, the new session is seeded from the bundled public
+        demo dataset (mouse, 8 samples: C1-C4 vs LKO1-LKO4) and is returned
+        already configured, so its count matrix cannot be replaced. Every
+        caller gets their own normal demo analysis; there is no shared demo
+        session or background warmup. Demo sessions are public data, so their
+        FST files are unencrypted and no X-Analysis-Key is required.
+      tags:
+        - Analyses
+      parameters:
+        - name: demo
+          in: query
+          required: false
+          schema:
+            type: boolean
+            default: false
+          description: Seed the new analysis from the public demo dataset.
+      responses:
+        '201':
+          description: Analysis created successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AnalysisCreateResponse'
+              example:
+                analysis_id: "abc123def456"
+                created_at: "2026-05-21T13:30:00Z"
+                demo: false
+        '400':
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /analyses/{analysis_id}:
+    get:
+      operationId: getAnalysis
+      summary: Get analysis status and metadata
+      description: Returns the current status and metadata for an analysis.
+      tags:
+        - Analyses
+      parameters:
+        - name: analysis_id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Unique analysis identifier
+      responses:
+        '200':
+          description: Analysis metadata
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Analysis'
+        '404':
+          description: Analysis not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /analyses/{analysis_id}/upload-counts:
+     post:
+       operationId: uploadCounts
+       summary: Upload count data
+       description: |
+         Upload raw count data as a single binary stream. Numeric sample columns
+         may contain fractional estimated counts. Sample columns that all have
+         identical totals of 100, 10,000, or 1,000,000 are rejected as likely
+         normalized values (for example TPM or CPM). Fractional raw values are
+         preserved for Limma-Voom and rounded only when passed to a DESeq2 model.
+       tags:
+         - Analyses
+       parameters:
+         - name: analysis_id
+           in: path
+           required: true
+           schema:
+             type: string
+         - name: Content-Type
+           in: header
+           required: true
+           schema:
+             type: string
+             enum: [text/csv, text/tab-separated-values, application/vnd.openxmlformats-officedocument.spreadsheetml.sheet]
+         - name: X-File-Name
+           in: header
+           required: true
+           schema:
+             type: string
+           description: Original filename (used to determine format)
+       requestBody:
+          required: true
+          content:
+            text/csv: {}
+            text/tab-separated-values: {}
+            application/vnd.openxmlformats-officedocument.spreadsheetml.sheet: {}
+       responses:
+          '201':
+            description: Upload complete and validated
+            content:
+              application/json:
+                schema:
+                  type: object
+                  properties:
+                    status:
+                      type: string
+                      enum: [complete]
+                    nrows:
+                      type: integer
+                    ncolumns:
+                      type: integer
+                    sample_names:
+                      type: array
+                      items:
+                        type: string
+          '400':
+            description: >
+              Invalid count data format or missing data. Possible errors:
+              - No count data available for analysis
+              - Duplicate column names
+              - Gene names column contains empty/null values (row numbers in meta)
+              - Duplicate ENSEMBL IDs detected (row numbers in meta)
+              - Invalid ENSEMBL ID format (expected ENSXXXXXXXXXXX pattern, rows in meta)
+              - Too many sample columns (max 18)
+              - Non-numeric values in sample columns (row numbers in meta)
+              - Negative count values detected (row numbers in meta)
+              - Missing or non-finite count values detected (row numbers in meta)
+              - Normalized expression values detected (identical sample-column totals at a standard normalized scale)
+            content:
+              application/json:
+                schema:
+                  $ref: '#/components/schemas/ErrorResponse'
+          '404':
+            description: Analysis not found
+            content:
+              application/json:
+                schema:
+                  $ref: '#/components/schemas/ErrorResponse'
+          '409':
+            description: Analysis already configured
+          '422':
+            description: Cannot upload count data to already configured analysis. Please reset analysis or create a new one.
+            content:
+              application/json:
+                schema:
+                  $ref: '#/components/schemas/ErrorResponse'
+          '507':
+            description: Insufficient storage
+
+  /analyses/{analysis_id}/upload-sample-sheet:
+     post:
+       operationId: uploadSampleSheet
+       summary: Upload sample sheet (optional)
+       description: |
+         Upload an optional sample sheet for advanced experimental design.
+         Required for advanced DE with covariates and blocking factors.
+       tags:
+         - Analyses
+       parameters:
+         - name: analysis_id
+           in: path
+           required: true
+           schema:
+             type: string
+       requestBody:
+         required: true
+         content:
+           text/csv:
+             schema:
+               type: string
+       responses:
+         '200':
+           description: Sample sheet validated and accepted
+           content:
+             application/json:
+               schema:
+                 type: object
+                 properties:
+                   rows:
+                     type: integer
+                   columns:
+                     type: array
+                     items:
+                       type: string
+                   sample_id_column:
+                     type: string
+         '400':
+           description: >
+             Invalid sample sheet format or content. Possible errors:
+             - Sample sheet is empty
+             - Duplicate sample IDs in the sample sheet (see message for details)
+             - Samples missing from the sample sheet (see message for details)
+           content:
+             application/json:
+               schema:
+                 $ref: '#/components/schemas/ErrorResponse'
+         '404':
+           description: Analysis not found
+           content:
+             application/json:
+               schema:
+                 $ref: '#/components/schemas/ErrorResponse'
+
+  /analyses/{analysis_id}/sample-sheet:
+    get:
+      operationId: getSampleSheet
+      summary: Get sample-sheet metadata
+      description: |
+        Returns the stored sample sheet's metadata in the same shape as the
+        upload response: column names, per-column level values, the sample-ID
+        column and per-sample values — the state the UI needs to render the
+        condition / covariate / blocking selectors without re-uploading the
+        sheet. Used by the demo prefill; available for any analysis.
+      tags:
+        - Analyses
+      parameters:
+        - name: analysis_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Sample-sheet metadata
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum: [complete]
+                  rows:
+                    type: integer
+                  columns:
+                    type: integer
+                  column_names:
+                    type: array
+                    items:
+                      type: string
+                  column_levels:
+                    type: object
+                    additionalProperties:
+                      type: array
+                      items:
+                        type: string
+                  sample_id_column:
+                    type: string
+                  sample_values:
+                    type: object
+                    additionalProperties:
+                      type: object
+                      additionalProperties:
+                        type: string
+        '404':
+          description: Sample sheet not found for this analysis
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /analyses/{analysis_id}/config:
+    get:
+      operationId: getParameters
+      summary: Get analysis parameters
+      description: Returns the configured DE parameters for an analysis.
+      tags:
+        - Analyses
+      parameters:
+        - name: analysis_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: DE parameters
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CountsConfig'
+        '404':
+          description: Analysis not found or not configured
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    post:
+      operationId: configureAnalysis
+      summary: Configure DE analysis parameters
+      description: |
+        Configure differential expression analysis parameters.
+        This locks the configuration and must be called before run-de.
+        Demo analyses use the same validation rules as any other analysis.
+      tags:
+        - Analyses
+      parameters:
+        - name: analysis_id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CountsConfig'
+      responses:
+        '200':
+          description: Configuration saved
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum: [configured]
+                  message:
+                    type: string
+        '400':
+          description: Invalid configuration
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Analysis not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: Analysis already configured or analysis already running
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          description: Cannot configure analysis without uploaded count data. Please upload count data first.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /analyses/{analysis_id}/run-explore:
+    post:
+      operationId: runExploreData
+      summary: Run exploratory data analysis
+      description: |
+        Starts asynchronous exploratory data analysis: gene filtering,
+        normalization and transformation of the uploaded counts.
+
+        Parameters travel with the request (like run-gsea, and like the original
+        Shiny app which read them from the settings panel at button-click time)
+        instead of being stored in the analysis config, so running an exploration
+        never invalidates existing DE results.
+
+        Returns 202 immediately; poll GET /analyses/{analysis_id} until
+        `explore_complete` is true, then fetch explore-results and explore-summary.
+
+        Same shared content-hash cache as run-de (demo only): with caching
+        enabled (default), an exploration whose counts hash and parameters
+        match a cached result returns 202 with status explore_complete
+        instantly. use_cache=false skips both the lookup and the fill; a
+        not-yet-cached parameter combination computes on demand and fills the
+        cache.
+      tags:
+        - Analyses
+      parameters:
+        - name: analysis_id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ExploreRunRequest'
+      responses:
+        '202':
+          description: |
+            Explore analysis queued (status explore_queued) or served instantly
+            from the results cache (status explore_complete, task_id
+            "cache-hit", cached true).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum: [explore_queued, explore_complete]
+                  running:
+                    type: boolean
+                  task_id:
+                    type: string
+        '400':
+          description: Invalid explore parameters
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Analysis not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: Analysis already running
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          description: Counts not uploaded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: Calculation workers are unavailable; start api/tasks/start_workers.R and retry
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /analyses/{analysis_id}/explore-results:
+    get:
+      operationId: getExploreResults
+      summary: Get explore data results
+      description: |
+        Returns the transformed expression matrix produced by run-explore
+        as an NDJSON stream (like de-results): the first line is an
+        `ExploreResultsHeader` carrying the sample names, and every
+        following line is one `ExploreResultRow` (one retained gene).
+      tags:
+        - Analyses
+      parameters:
+        - name: analysis_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: |
+            NDJSON stream: line 1 is an `ExploreResultsHeader`
+            (`{"samples": [...]}`); every following line is one
+            `ExploreResultRow`.
+          content:
+            application/x-ndjson:
+              schema:
+                $ref: '#/components/schemas/ExploreResultRow'
+        '204':
+          description: Results not ready
+        '404':
+          description: Analysis not found
+          content:
+            application/json:
+               schema:
+                 $ref: '#/components/schemas/ErrorResponse'
+        '410':
+          description: Results expired — completed results were removed after the retention period; re-run the analysis
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Explore analysis failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /analyses/{analysis_id}/explore-summary:
+    get:
+      operationId: getExploreSummary
+      summary: Get explore gene-filtering summary
+      description: |
+        Gene filtering report of the last exploration (mirrors de-summary):
+        how many genes were retained by the count and variance filters and
+        the human-readable filter conditions.
+      tags:
+        - Analyses
+      parameters:
+        - name: analysis_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Explore summary
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExploreSummary'
+        '204':
+          description: Summary not ready
+        '404':
+          description: Analysis not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /analyses/{analysis_id}/run-de:
+    post:
+      operationId: runDEAnalysis
+      summary: Run differential expression analysis
+      description: |
+        Starts asynchronous differential expression analysis using mirai workers.
+        Returns 202 Accepted immediately; poll GET /analyses/{analysis_id} until
+        `de_complete` is true.
+
+        When the "Cache results" option is enabled (default), a demo analysis
+        whose counts hash, sample-sheet hash, organism and DE settings match a
+        previously cached result is served from the shared content-hash cache:
+        the response is 202 with status `de_complete` and `task_id`
+        "cache-hit" without enqueueing any computation.
+
+        The shared results cache is used only by demo analyses; private
+        analyses are encrypted and always compute into their own session
+        directory. For demos, "Cache results" (default on) serves an identical
+        run from the cache and fills it on a miss; use_cache=false skips both
+        the lookup and the fill. A run whose settings differ from every cached
+        result is computed on demand (202 de_queued) and cached under its own
+        content-hash key.
+      tags:
+        - Analyses
+      parameters:
+        - name: analysis_id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                use_cache:
+                  type: boolean
+                  default: true
+                  description: |
+                    "Cache results" opt-out. When true (default), a matching
+                    cached result completes the run instantly and fresh
+                    results are mirrored into the shared cache. When false,
+                    both the lookup and the fill are skipped.
+      responses:
+        '202':
+          description: |
+            DE analysis started (status de_queued) or served instantly from
+            the results cache (status de_complete, task_id "cache-hit",
+            cached true).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum: [de_queued, de_complete]
+                  task_id:
+                    type: string
+        '400':
+          description: >
+            DE analysis preparation failed due to invalid data. Possible errors:
+            - Gene names column contains no data
+            - Invalid ENSEMBL IDs detected (check message for row numbers)
+            - Duplicate ENSEMBL IDs detected (check message for row numbers)
+            - Advanced design validation failed (see message)
+            - Some selected samples don't have valid condition values
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          description: No configuration provided for DE analysis. Please configure the analysis first.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: Analysis already running
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Analysis not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: Calculation workers are unavailable; start api/tasks/start_workers.R and retry
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /analyses/{analysis_id}/de-results:
+    get:
+      operationId: getDEResults
+      summary: Get DE results
+      description: |
+        Full differential-expression results as newline-delimited JSON
+        (application/x-ndjson): one row object per gene carrying statistics
+        (log2FC, pvalue, padj, baseMean, stat) and gene annotations.
+      tags:
+        - Analyses
+      parameters:
+        - name: analysis_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: DE results
+          content:
+            application/x-ndjson:
+              schema:
+                $ref: '#/components/schemas/DEResults'
+        '204':
+          description: Results not ready yet
+        '403':
+          description: Direct KEGG ORA results are currently disabled
+        '404':
+          description: Analysis not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '410':
+          description: Results expired — completed results were removed after the retention period; re-run the analysis
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /analyses/{analysis_id}/run-gsea:
+    post:
+      operationId: runGSEA
+      summary: Run gene set enrichment analysis
+      description: |
+        Starts asynchronous GSEA using mirai workers.
+        Requires DE results to be available.
+      tags:
+        - Analyses
+      parameters:
+        - name: analysis_id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GSEARunRequest'
+      responses:
+        '202':
+          description: GSEA analysis started
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GSEARunAccepted'
+        '400':
+          description: DE results required or request parameters are invalid
+        '409':
+          description: Another analysis is already running
+        '404':
+          description: Analysis not found
+        '503':
+          description: Calculation workers are unavailable; start api/tasks/start_workers.R and retry
+
+  /analyses/{analysis_id}/gsea-results:
+    get:
+      operationId: getGSEResults
+      summary: Get GSEA results
+      description: |
+        Full GSEA results as newline-delimited JSON (application/x-ndjson):
+        one row object per gene set.
+      tags:
+        - Analyses
+      parameters:
+        - name: analysis_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: GSEA results (NDJSON stream)
+          content:
+            application/x-ndjson:
+              schema:
+                $ref: '#/components/schemas/GSEAResults'
+        '204':
+          description: Results not ready yet
+        '404':
+          description: Analysis not found or no significant gene sets were found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /analyses/{analysis_id}/gsea-rankings:
+    get:
+      operationId: getGSEARankings
+      summary: Get the ranked genes used by GSEA
+      description: |
+        Returns the ordered gene identifiers and ranking scores from the
+        completed GSEA run. The UI uses these with a selected gene set's
+        membership to render its running enrichment score plot.
+      tags:
+        - Analyses
+      parameters:
+        - name: analysis_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Ranked gene list
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GSEARankings'
+        '204':
+          description: GSEA results are not ready yet
+        '410':
+          description: Ranked genes are unavailable for this saved GSEA result; rerun GSEA
+
+  /analyses/{analysis_id}/run-ora:
+    post:
+      operationId: runORA
+      summary: Run over-representation analysis
+      description: |
+        Starts asynchronous ORA using mirai workers.
+        Requires DE results to be available. Direct `KEGG` ORA is currently
+        disabled; all other collections use the local annotation database.
+      tags:
+        - Analyses
+      parameters:
+        - name: analysis_id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ORARunRequest'
+      responses:
+        '202':
+          description: ORA analysis started
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ORARunAccepted'
+        '400':
+          description: DE results required or request parameters are invalid
+        '403':
+          description: Direct KEGG ORA is currently disabled
+        '409':
+          description: Another analysis is already running
+        '404':
+          description: Analysis not found
+        '503':
+          description: Calculation workers are unavailable; start api/tasks/start_workers.R and retry
+
+  /analyses/{analysis_id}/ora-results:
+    get:
+      operationId: getORAResults
+      summary: Get ORA results
+      description: |
+        Full ORA results as newline-delimited JSON (application/x-ndjson):
+        one enriched gene-set row object per line.
+      tags:
+        - Analyses
+      parameters:
+        - name: analysis_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: ORA results
+          content:
+            application/x-ndjson:
+              schema:
+                $ref: '#/components/schemas/ORAResults'
+        '204':
+          description: Results not ready yet
+        '404':
+          description: Analysis not found or no significant gene sets were found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /analyses/{analysis_id}/run-correlation-ora:
+    post:
+      operationId: runCorrelationORA
+      summary: Run ORA on correlation results
+      description: |
+        Starts asynchronous ORA using genes whose correlation adjusted p-value
+        is at or below `correlation_padj_threshold`. The background universe is
+        all genes with valid correlation tests. Results use a separate lifecycle
+        and result file from differential-expression ORA.
+      tags:
+        - Analyses
+      parameters:
+        - name: analysis_id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CorrelationORARunRequest'
+      responses:
+        '202':
+          description: Correlation ORA analysis started
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CorrelationORARunAccepted'
+        '400':
+          description: Explore results required or request parameters are invalid
+        '409':
+          description: Another analysis is already running
+        '422':
+          description: No genes meet the correlation adjusted p-value cutoff
+        '404':
+          description: Analysis not found
+        '503':
+          description: Calculation workers are unavailable; start api/tasks/start_workers.R and retry
+
+  /analyses/{analysis_id}/correlation-ora-results:
+    get:
+      operationId: getCorrelationORAResults
+      summary: Get correlation ORA results
+      description: |
+        Full correlation ORA results as newline-delimited JSON
+        (application/x-ndjson), isolated from differential-expression ORA.
+      tags:
+        - Analyses
+      parameters:
+        - name: analysis_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Correlation ORA results
+          content:
+            application/x-ndjson:
+              schema:
+                $ref: '#/components/schemas/ORAResults'
+        '204':
+          description: Results not ready yet
+        '404':
+          description: Analysis not found or no significant gene sets were found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /analyses/{analysis_id}/run-kegg:
+    post:
+      operationId: runKEGG
+      summary: Run KEGG GSEA
+      description: |
+        Starts asynchronous KEGG GSEA using mirai workers.
+        Requires DE results with Entrez annotations.
+      tags:
+        - Analyses
+      parameters:
+        - name: analysis_id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - organism
+              properties:
+                organism:
+                  type: string
+                  enum: [Mus musculus, Homo sapiens]
+                padj_threshold:
+                  type: number
+                  default: 0.25
+      responses:
+        '202':
+          description: KEGG GSEA started
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum: [running]
+                  task_id:
+                    type: string
+        '400':
+          description: DE results required or missing Entrez annotations
+        '404':
+          description: Analysis not found
+
+  /analyses/{analysis_id}/ws:
+    get:
+      operationId: connectWebSocket
+      summary: WebSocket connection for real-time updates
+      description: |
+        Upgrade to WebSocket connection for real-time progress updates.
+        Clients receive TaskUpdate messages during async operations.
+      tags:
+        - Analyses
+      parameters:
+        - name: analysis_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '101':
+          description: WebSocket upgrade successful
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TaskUpdate'
+        '200':
+          description: Alternative success response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TaskUpdate'
+        '404':
+          description: Analysis not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+components:
+  schemas:
+    VersionsResponse:
+      type: object
+      description: |
+        Database and software version lines grouped by organism.
+        Each value is a list of human-readable version strings.
+        Empty arrays indicate the database tables were unavailable.
+      properties:
+        mus_musculus:
+          type: array
+          items:
+            type: string
+          description: Version lines for the Mus musculus annotation database
+        homo_sapiens:
+          type: array
+          items:
+            type: string
+          description: Version lines for the Homo sapiens annotation database
+
+    BuildInfoResponse:
+      type: object
+      required:
+        - metadata_status
+        - source_revision
+        - artifact_digest
+        - provenance_url
+        - built_at
+        - verification
+      properties:
+        metadata_status:
+          type: string
+          enum: [complete, incomplete]
+          description: Whether source revision, artifact digest, and provenance URL are present and well-formed.
+        source_revision:
+          type: [string, "null"]
+          description: Full source commit hash supplied by the build pipeline.
+        artifact_digest:
+          type: [string, "null"]
+          description: Immutable artifact digest, for example sha256 followed by 64 hexadecimal characters.
+        provenance_url:
+          type: [string, "null"]
+          format: uri
+          description: HTTPS URL for the independently verifiable build provenance.
+        built_at:
+          type: [string, "null"]
+          format: date-time
+          description: Build time in UTC, if supplied.
+        verification:
+          type: string
+          enum: [informational_only]
+          description: The API reports metadata but does not verify the running artifact or provenance.
+
+    Analysis:
+      type: object
+      properties:
+        analysis_id:
+          type: string
+          example: "abc123def456"
+        created_at:
+          type: string
+          format: date-time
+        status:
+          type: string
+          enum: [created, configured, de_queued, gsea_queued, explore_queued, running_de, running_gsea, running_ora, ora_queued, ora_failed, correlation_ora_queued, correlation_ora_failed, correlation_ora_complete, running_kegg, de_complete, gsea_complete, explore_complete, explore_failed, ora_complete, kegg_complete, de_failed, gsea_failed, error]
+        counts_uploaded:
+          type: boolean
+        configured:
+          type: boolean
+        demo:
+          type: boolean
+          description: True when the session was seeded from the public demo dataset.
+        de_complete:
+          type: boolean
+        gsea_complete:
+          type: boolean
+        ora_complete:
+          type: boolean
+          description: True when the last ORA calculation finished successfully
+        correlation_ora_complete:
+          type: boolean
+          description: True when the last correlation ORA calculation finished successfully
+        running:
+          type: boolean
+        message:
+          type: string
+        explore_complete:
+          type: boolean
+          description: True when the last exploration finished successfully
+        queue_pending:
+          type: integer
+          description: >-
+            Tasks waiting for a free worker slot. Only present while the
+            analysis is running.
+        queue_running:
+          type: integer
+          description: >-
+            Tasks being computed right now (one per worker slot). Only present
+            while the analysis is running.
+        queue_state:
+          type: string
+          enum: [queued, running]
+          description: >-
+            State of this analysis's own queue message: `queued` while it waits
+            for a free worker slot, `running` once a worker claimed it. Present
+            only while the task is pending. It can also be briefly absent if
+            the queue database is locked; clients should then keep their
+            current label rather than falling back to the `*_queued` status.
+            A running analysis is never reported as `queued`.
+
+    AnalysisCreateResponse:
+      type: object
+      properties:
+        analysis_id:
+          type: string
+          example: "abc123def456"
+        created_at:
+          type: string
+          format: date-time
+        demo:
+          type: boolean
+          description: True when the session was seeded from the public demo dataset.
+
+    DEParameters:
+      type: object
+      required:
+        - model
+        - reference_samples
+        - comparison_samples
+      properties:
+        model:
+          type: string
+          enum: [DESeq2, DESeq2 (Rust), Limma-Voom]
+          description: DE analysis model
+          example: DESeq2
+        reference_samples:
+          type: array
+          items:
+            type: string
+          description: Sample IDs for reference group
+          example: ["sample1", "sample2", "sample3"]
+        comparison_samples:
+          type: array
+          items:
+            type: string
+          description: Sample IDs for comparison group
+          example: ["sample4", "sample5", "sample6"]
+        gene_filter:
+          $ref: '#/components/schemas/GeneFilter'
+        advanced_design:
+          type: object
+          description: |
+            Advanced design parameters (requires sample sheet with 'condition' column).
+            Condition column is auto-detected from sample sheet.
+          properties:
+            reference_level:
+              type: string
+              example: Control
+            comparison_level:
+              type: string
+              example: Treated
+            covariates:
+              type: array
+              items:
+                type: string
+            blocking_column:
+              type: string
+        alpha:
+          type: number
+          default: 0.05
+          description: Significance threshold for DESeq2/RustDESeq2 models (ignored for limma-voom)
+
+    CountsConfig:
+      type: object
+      required:
+        - organism
+        - name_column
+        - sample_columns
+        - de_parameters
+      properties:
+        organism:
+          type: string
+          enum: [Mus musculus, Homo sapiens]
+          description: Organism for analysis
+        name_column:
+          type: string
+          description: Column containing gene identifiers
+        sample_columns:
+          type: array
+          items:
+            type: string
+          description: List of sample columns to be analyzed
+        de_parameters:
+          $ref: '#/components/schemas/DEParameters'
+
+    GeneFilter:
+      type: object
+      description: |
+        Low-count gene filtering, shared by DE analysis (de_parameters.gene_filter)
+        and exploration (explore_parameters.gene_filter).
+      properties:
+        type:
+          type: string
+          enum: [none, filter1, filter2]
+          default: filter1
+          description: |
+            filter1: keep genes whose total counts >= min_count_sum.
+            filter2: keep genes with >= min_count_per_sample counts in >= min_samples samples.
+            When gene_filter is omitted entirely, the server defaults to filter1 with min_count_sum=10.
+        min_count_sum:
+          type: integer
+          description: Minimum sum of counts (for filter1)
+        min_count_per_sample:
+          type: integer
+          description: Minimum count threshold (for filter2)
+        min_samples:
+          type: integer
+          description: Minimum samples with count above threshold (for filter2)
+
+    ExploreRunRequest:
+      type: object
+      description: |
+        Request body of POST /analyses/{analysis_id}/run-explore.
+        Supplies everything the exploration worker needs, so exploration works
+        even before the analysis is configured for DE.
+      required:
+        - organism
+        - name_column
+        - sample_columns
+        - explore_parameters
+      properties:
+        organism:
+          type: string
+          enum: [Mus musculus, Homo sapiens]
+          description: Organism (used for gene annotation enrichment)
+        name_column:
+          type: string
+          description: Column containing gene identifiers
+        sample_columns:
+          type: array
+          items:
+            type: string
+          description: Sample columns to explore
+        explore_parameters:
+          $ref: '#/components/schemas/ExploreParameters'
+        use_cache:
+          type: boolean
+          default: true
+          description: |
+            "Cache results" opt-out. When true (default), an exploration whose
+            counts hash and parameters match a previously cached result
+            completes instantly (202 with status explore_complete), and fresh
+            results are mirrored into the shared content-hash cache. When
+            false, the lookup and the cache fill are both skipped.
+
+    ExploreParameters:
+      type: object
+      description: |
+        Exploration parameters. Field names and semantics mirror the original
+        Shiny app inputs (exploreTransform, exploreNorm, explorePseudocount,
+        exploreGeneFilter, exploreGeneFilterValue1/2,
+        exploreVarianceFilterMode/Value).
+      properties:
+        transformation:
+          type: string
+          enum: [none, log2, vst, rlog]
+          default: vst
+          description: Transformation applied after normalization
+        normalization:
+          type: string
+          enum: [none, deseq2, tmm, cpm]
+          default: deseq2
+          description: Normalization applied to the filtered counts
+        pseudocount:
+          type: number
+          default: 1
+          minimum: 0
+          description: Pseudocount added before log2 (only used for log2)
+        gene_filter:
+          $ref: '#/components/schemas/GeneFilter'
+        variance_filter:
+          type: object
+          description: Keep only the most variable genes (applied after gene_filter)
+          properties:
+            mode:
+              type: string
+              enum: [percent, count]
+              default: percent
+              description: 'percent: keep top `value`% genes by variance; count: keep top `value` genes'
+            value:
+              type: number
+              default: 100
+              minimum: 1
+              description: Filter magnitude as selected in the settings panel
+
+    ExploreResultsHeader:
+      type: object
+      description: |
+        First line of the explore-results NDJSON stream. Carries the table
+        header; data rows follow on the subsequent lines.
+      required:
+        - samples
+      properties:
+        samples:
+          type: array
+          items:
+            type: string
+          description: Sample columns, in count-matrix order
+
+    ExploreResultRow:
+      type: object
+      description: |
+        One retained gene of the explore-results NDJSON stream (lines after
+        the `ExploreResultsHeader` line).
+      required:
+        - gene_id
+        - values
+      properties:
+        gene_id:
+          type: string
+          description: Ensembl gene ID
+        symbol:
+          type: string
+          nullable: true
+          description: Gene symbol (null when not found in the gene DB)
+        geneInfo:
+          type: string
+          nullable: true
+        entrez:
+          type: string
+          nullable: true
+        entrezNcbi:
+          type: string
+          nullable: true
+        values:
+          type: array
+          items:
+            type: number
+          description: |
+            Transformed expression values, aligned index-wise with the
+            header's `samples` array
+
+    ExploreSummary:
+      type: object
+      description: Gene filtering report of the last exploration
+      properties:
+        total_genes:
+          type: integer
+          description: Genes before filtering
+        filtered_genes:
+          type: integer
+          description: Genes retained after filtering
+        removed_by_count_filter:
+          type: integer
+        removed_by_variance_filter:
+          type: integer
+        filter_conditions:
+          type: object
+          properties:
+            count_filter:
+              type: string
+              description: Human-readable count filter condition
+            variance_filter:
+              type: string
+              description: Human-readable variance filter condition
+        warning:
+          type: string
+          nullable: true
+          description: e.g. "Filter too strict - showing all genes"
+
+    DEResults:
+      type: object
+      description: |
+        One line of the de-results NDJSON stream: a single gene row.
+        Fields vary by DE model — DESeq2 rows carry lfcSE, limma-voom rows
+        carry AveExpr and B; annotation fields are present when the gene is
+        in the annotation database. pvalue/padj are emitted as decimal or
+        scientific-notation strings, null when the test produced no value.
+      required:
+        - gene_id
+      properties:
+        gene_id:
+          type: string
+          description: Ensembl gene ID
+        baseMean:
+          type: number
+          description: Mean of normalized counts (DESeq2)
+        log2FC:
+          type: [number, "null"]
+          description: log2 fold change (comparison vs reference)
+        lfcSE:
+          type: [number, "null"]
+          description: Standard error of log2FC (DESeq2)
+        stat:
+          type: [number, "null"]
+          description: Wald statistic (DESeq2) or moderated t-statistic (limma-voom)
+        pvalue:
+          type: [string, "null"]
+          description: p-value as decimal or scientific notation
+        padj:
+          type: [string, "null"]
+          description: BH-adjusted p-value as decimal or scientific notation
+        symbol:
+          type: [string, "null"]
+          description: Gene symbol (external gene name)
+        geneInfo:
+          type: [string, "null"]
+          description: Gene description
+        entrez:
+          type: [string, "null"]
+          description: Entrez gene ID
+        entrezNcbi:
+          type: [string, "null"]
+          description: Entrez gene ID from NCBI
+        AveExpr:
+          type: number
+          description: Average expression (limma-voom)
+        B:
+          type: number
+          description: Log-odds of differential expression (limma-voom)
+
+    GSEARunRequest:
+      type: object
+      required:
+        - collection
+      properties:
+        collection:
+          $ref: '#/components/schemas/GeneSetCollection'
+        ranking_method:
+          type: string
+          enum: [stat, pvalue, log2FoldChange, "-log10(pvalue) * log2FC_sign", gene_of_interest]
+          default: stat
+        padj_threshold:
+          type: number
+          default: 0.25
+        gene_of_interest:
+          type: string
+          description: Ensembl ID for correlation ranking
+        correlation_method:
+          type: string
+          enum: [pearson, spearman, kendall]
+          default: pearson
+
+    ORARunRequest:
+      type: object
+      required:
+        - collection
+      properties:
+        collection:
+          $ref: '#/components/schemas/ORAGeneSetCollection'
+        padj_threshold:
+          type: number
+          default: 0.05
+
+    CorrelationORARunRequest:
+      type: object
+      required:
+        - collection
+        - correlation_gene_ids
+        - correlation_padj_values
+        - correlation_padj_threshold
+      properties:
+        collection:
+          $ref: '#/components/schemas/GeneSetCollection'
+        correlation_gene_ids:
+          type: array
+          minItems: 1
+          uniqueItems: true
+          items:
+            type: string
+          description: Gene IDs for all successfully tested correlations.
+        correlation_padj_values:
+          type: array
+          minItems: 1
+          items:
+            type: number
+            minimum: 0
+            maximum: 1
+          description: BH-adjusted correlation p-values, aligned with correlation_gene_ids.
+        correlation_padj_threshold:
+          type: number
+          minimum: 0
+          maximum: 1
+          default: 0.05
+          description: Include correlation genes at or below this adjusted p-value cutoff.
+        padj_threshold:
+          type: number
+          minimum: 0
+          maximum: 1
+          default: 0.05
+          description: Maximum adjusted p-value for enriched gene sets.
+
+    GSEAResults:
+      type: object
+      description: |
+        One line of the gsea-results NDJSON stream: a single gene-set row
+        (clusterProfiler gseaResult with renames: setSize → size,
+        enrichmentScore → ES). The stable identifier is `id`, the readable
+        term name is `name`, and `Description` is the longer description.
+      required:
+        - id
+        - name
+      properties:
+        id:
+          type: string
+          description: |
+            External source identifier when available (for example a GO or
+            Reactome accession); otherwise the MSigDB systematic name prefixed
+            with MSigDB:. Falls back to the readable name when no source ID is
+            available.
+        name:
+          type: string
+          description: Readable gene set name
+        Description:
+          type: [string, "null"]
+          description: Gene set description, or null when unavailable
+        size:
+          type: number
+          description: Gene set size
+        ES:
+          type: number
+          description: Enrichment score
+        NES:
+          type: number
+          description: Normalized enrichment score
+        pvalue:
+          type: [string, "null"]
+          description: p-value as decimal or scientific notation
+        p.adjust:
+          type: [string, "null"]
+          description: Adjusted p-value as decimal or scientific notation
+        qvalue:
+          type: number
+          description: q-value
+        geneRatio:
+          type: number
+          description: Fraction of the gene set in the leading edge
+        rank:
+          type: [integer, "null"]
+          description: Rank at the maximum enrichment point
+        leading_edge:
+          type: [string, "null"]
+          description: Leading-edge annotation
+        core_enrichment:
+          type: [string, "null"]
+          description: Pipe-separated Ensembl gene IDs in the leading edge
+        core_enrichment_symbols:
+          type: [string, "null"]
+          description: Pipe-separated gene symbols in the leading edge
+        gene_set_genes:
+          type: [string, "null"]
+          description: Slash-separated tested Ensembl gene IDs in the selected gene set
+        absNES:
+          type: number
+          description: Absolute NES (sort helper)
+    GSEARankings:
+      type: object
+      required:
+        - gene_ids
+        - scores
+      properties:
+        gene_ids:
+          type: array
+          items:
+            type: string
+          description: Gene identifiers ordered by the ranking used for GSEA
+        scores:
+          type: array
+          items:
+            type: number
+          description: Ranking score corresponding to each gene identifier
+    GeneSetCollection:
+      type: string
+      description: |
+        Gene-set collection identifier used by both GSEA and ORA. Some
+        collection prefixes are organism-specific: choose MGI_GO collections
+        for mouse and GOA_GO collections for human. These are GO annotations
+        from MGI and GOA, respectively; Ensembl gene records are loaded from
+        GTF. Collection data must be present in the selected organism's
+        annotation database.
+      enum:
+        - MGI_GO_BP+MF+CC
+        - MGI_GO_BP
+        - MGI_GO_CC
+        - MGI_GO_MF
+        - GOA_GO_BP+MF+CC
+        - GOA_GO_BP
+        - GOA_GO_CC
+        - GOA_GO_MF
+        - MSigDB_GO_BP+MF+CC
+        - MSigDB_GO_BP+MF+CC+HP
+        - MSigDB_GO_BP
+        - MSigDB_GO_CC
+        - MSigDB_GO_MF
+        - MSigDB_MP
+        - MSigDB_HP
+        - MSigDB_GTRD
+        - MSigDB_MIRDB
+        - MSigDB_MIR_MIRDB
+        - MSigDB_MIR_MIR_LEGACY
+        - MSigDB_TFT_GTRD
+        - MSigDB_TFT_TFT_LEGACY
+        - MSigDB_BIOCARTA
+        - MSigDB_KEGG_MEDICUS
+        - MSigDB_PID
+        - MSigDB_KEGG_LEGACY
+        - MSigDB_CGP
+        - MSigDB_Reactome
+        - MSigDB_WikiPathways
+        - MSigDB_CELL_TYPE
+        - MSigDB_Hallmark
+
+    ORAGeneSetCollection:
+      oneOf:
+        - $ref: '#/components/schemas/GeneSetCollection'
+        - type: string
+          enum: [KEGG]
+          description: KEGG pathway database, queried with Entrez IDs.
+
+    GSEARunAccepted:
+      type: object
+      required: [status, running, task_id, gsea_complete]
+      properties:
+        status:
+          type: string
+          enum: [gsea_queued]
+        running:
+          type: boolean
+          enum: [true]
+        task_id:
+          type: string
+        gsea_complete:
+          type: boolean
+          enum: [false]
+
+    ORARunAccepted:
+      type: object
+      required: [status, running, task_id, ora_complete]
+      properties:
+        status:
+          type: string
+          enum: [ora_queued]
+        running:
+          type: boolean
+          enum: [true]
+        task_id:
+          type: string
+        ora_complete:
+          type: boolean
+          enum: [false]
+
+    CorrelationORARunAccepted:
+      type: object
+      required: [status, running, task_id, correlation_ora_complete]
+      properties:
+        status:
+          type: string
+          enum: [correlation_ora_queued]
+        running:
+          type: boolean
+          enum: [true]
+        task_id:
+          type: string
+        correlation_ora_complete:
+          type: boolean
+          enum: [false]
+
+    ORAResults:
+      type: object
+      description: One line of the ora-results NDJSON stream, containing one enriched gene set.
+      required:
+        - name
+        - Description
+      properties:
+        name:
+          type: string
+          description: Gene-set term identifier
+        Description:
+          type: string
+          description: Normalized gene-set name
+        Details:
+          type: [string, "null"]
+          description: Gene-set description from the annotation database
+        size:
+          type: number
+          description: Number of genes in the gene set within the background
+        Count:
+          type: integer
+          description: Number of input genes overlapping the gene set
+        pvalue:
+          type: [string, "null"]
+          description: p-value as decimal or scientific-notation string
+        p.adjust:
+          type: number
+        qvalue:
+          type: [number, "null"]
+        GeneRatio:
+          type: string
+          description: Input overlap / input gene count
+        BgRatio:
+          type: string
+          description: Gene-set size / background universe size
+        geneRatio:
+          type: number
+          description: Numeric input overlap ratio
+        richFactor:
+          type: number
+        FoldEnrichment:
+          type: number
+        geneID:
+          type: string
+          description: Slash-separated overlap IDs (Entrez for KEGG, Ensembl for local collections)
+        gene_id_symbol:
+          type: string
+          description: Slash-separated gene symbols in the overlap
+        gene_id_ensembl:
+          type: string
+          description: Slash-separated Ensembl gene IDs in the overlap
+
+    TaskUpdate:
+      type: object
+      properties:
+        task_id:
+          type: string
+        analysis_id:
+          type: string
+        status:
+          type: string
+          enum: [started, progress, completed, error]
+        progress:
+          type: integer
+          minimum: 0
+          maximum: 100
+        message:
+          type: string
+        result_available:
+          type: boolean
+        error:
+          type: object
+          properties:
+            type:
+              type: string
+              enum: [execution, interrupted, timeout]
+            message:
+              type: string
+
+    ErrorResponse:
+      type: object
+      description: RFC 9457 Problem Details error response
+      properties:
+        type:
+          type: string
+          description: URI reference identifying the problem type
+          default: "about:blank"
+        title:
+          type: string
+          description: Short, human-readable summary of the problem
+        status:
+          type: integer
+          description: HTTP status code
+          enum: [400, 404, 409, 422, 500, 507]
+        detail:
+          type: string
+          description: Human-readable explanation specific to this occurrence
+        instance:
+          type: string
+          description: URI reference for the specific error occurrence
+        meta:
+          type: object
+          description: Extended error details for machine consumption
+          properties:
+            validation:
+              type: string
+              description: Validation error code for programmatic handling
+              enum:
+                - empty_gene_ids
+                - duplicate_gene_ids
+                - invalid_ensembl_ids
+                - too_many_samples
+                - non_numeric_counts
+                - negative_counts
+                - non_integer_counts
+                - duplicate_column_names
+                - invalid_column_type
+
+
+security: []
+
+tags:
+  - name: Analyses
+    description: Analysis lifecycle management
+  - name: System
+    description: System-level endpoints (versions, health)
