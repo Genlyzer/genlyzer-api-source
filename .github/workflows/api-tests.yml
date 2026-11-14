@@ -37,7 +37,7 @@ jobs:
         run: mkdir -p "$R_LIBS_USER"
 
       - name: Cache R packages
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ${{ github.workspace }}/.R-library
           key: ${{ runner.os }}-r-${{ steps.r-version.outputs.version }}-${{ hashFiles('.github/workflows/api-tests.yml') }}
@@ -96,7 +96,7 @@ jobs:
 
       - name: Upload tested API source
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: genlyzer-api-${{ github.sha }}
           path: package/genlyzer-api.tar.gz
@@ -119,7 +119,7 @@ jobs:
       id-token: write
     steps:
       - name: Download tested API source
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: genlyzer-api-${{ github.sha }}
           path: package
@@ -152,7 +152,7 @@ jobs:
       DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
     steps:
       - name: Download tested API source
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: genlyzer-api-${{ github.sha }}
           path: package
