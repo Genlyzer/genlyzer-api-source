@@ -7,11 +7,13 @@ this API code handles analysis inputs.
 ## Source-release scope
 
 The API source, tests, OpenAPI contract, and public demo fixtures in
-`api/demo-data/` are included.
-The UI, annotation databases and population scripts, deployment files, and
-runtime data (sessions, queues, caches, and logs) are excluded. The API uses
-locally provisioned annotation databases; this source copy does not include
-those databases.
+`api/demo-data/` are included, along with CI and maintainer deployment
+automation. The UI, annotation databases and population scripts, VPS
+systemd/nginx configuration, server secrets, and runtime data (sessions,
+queues, caches, and logs) are excluded. The API uses locally provisioned
+annotation databases; this source copy does not include those databases. This
+repository is intended for code inspection, not as a self-contained
+installation or reproduction package.
 
 The API source accepts count matrices and optional sample sheets, validates
 them, queues analysis jobs, runs calculations, and returns results. Supported
@@ -125,17 +127,10 @@ method assumptions and validate results for their study.
   calculation or validation errors. Errors needed by the user are returned in
   the API response or analysis status instead.
 
-Enabled Genlyzer calculation routes use local worker processes and locally
-provisioned annotation databases.
+### Verifying a deployed build
 
-This source lets users inspect how the Genlyzer API is written, but by itself
-does not prove that the live Genlyzer app is running this exact code revision
-or establish all of its runtime behavior. The live app also depends on its
-deployment configuration, reverse proxy, network access, logs, backups,
-operating system, and third-party dependencies.
-
-### Build identification and deployment verification
-This endpoint prepares the API for later CI/CD integration
+This section helps correlate the public source with the release identified by
+the running service.
 
 `GET /v1/build-info` reports optional build metadata supplied to the API
 process:
@@ -144,22 +139,28 @@ process:
   characters).
 - `GENLYZER_ARTIFACT_DIGEST`: immutable artifact digest in
   `sha256:<64 hexadecimal characters>` format.
-- `GENLYZER_BUILD_PROVENANCE_URL`: HTTPS URL to the CI provenance/attestation.
+- `GENLYZER_BUILD_PROVENANCE_URL`: HTTPS URL to the GitHub Actions run that
+  built and attested the artifact.
 - `GENLYZER_BUILD_TIMESTAMP`: optional UTC timestamp.
 
-The API systemd unit optionally reads these values from
-`/etc/genlyzer/build-info`. The endpoint marks metadata complete when the
-revision, digest, and provenance URL are well-formed. It does **not** verify
-the signature, inspect its own executable/source, or prove that the claimed
-artifact is what the deployment system launched. Treat it as a convenient
-identifier and verify the attestation and deployment record independently.
+The API systemd unit reads these values from `/etc/genlyzer/build-info`; the
+deployment script writes that file after checking the artifact digest. The
+endpoint marks metadata complete when the revision, digest, and provenance
+URL are well-formed. It does **not** verify the signature, inspect its own
+executable/source, or independently prove that the claimed artifact is still
+running. Treat the response as a convenient identifier, not proof.
 
-To establish a stronger source-to-production chain, CI should test and build
-an immutable artifact from a specific source commit, publish a signed
-provenance statement binding that commit to the artifact digest, and deploy
-that exact digest without rebuilding. The deployment system can then supply
-the resulting values to the API environment file. A digest reported only by
-the application is not independent proof.
+On pushes to `main`, the workflow runs tests, packages the API source and demo
+fixtures, creates a signed GitHub artifact attestation, and waits for approval
+in the `production` environment before deploying that same artifact without
+rebuilding it. The VPS deployment script checks the artifact digest, blocks
+deployment while analyses are queued or running, preserves runtime data, and
+rolls code back if health checks fail. Because this repository is public,
+GitHub artifact attestations are enabled. Verify the attestation independently
+against the downloaded workflow artifact with GitHub's `gh attestation verify`
+command, and compare the artifact digest with `/v1/build-info` and the
+deployment run. A digest reported only by the application is not independent
+proof.
 
 Encryption at rest, server-side confidentiality, and code transparency are
 different properties:
@@ -182,3 +183,5 @@ handoff and queue behavior, demo handling, configuration validation, and
 analysis helpers. GitHub Actions runs these tests on pull requests and pushes
 to `main`; the workflow parses the R source and OpenAPI YAML before executing
 the test scripts. The tests do not require the annotation database files.
+Production deployment is only considered for a push to `main`, after tests
+pass and a reviewer approves the `production` environment.

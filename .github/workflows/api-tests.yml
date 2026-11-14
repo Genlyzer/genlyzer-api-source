@@ -14,6 +14,9 @@ jobs:
   test:
     runs-on: ubuntu-24.04
     timeout-minutes: 45
+    outputs:
+      artifact_digest: ${{ steps.package.outputs.digest }}
+      build_timestamp: ${{ steps.package.outputs.build_timestamp }}
     env:
       R_LIBS_USER: ${{ github.workspace }}/.R-library
 
@@ -78,3 +81,125 @@ jobs:
             Rscript "$test_file"
             echo "::endgroup::"
           done
+
+      - name: Package tested API source
+        id: package
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          set -euo pipefail
+          mkdir -p package
+          git archive --format=tar --prefix=genlyzer-api/ "$GITHUB_SHA" \
+            api/server.R api/config api/helpers api/routes api/tasks api/demo-data openapi.yaml \
+            | gzip -n > package/genlyzer-api.tar.gz
+          echo "digest=sha256:$(sha256sum package/genlyzer-api.tar.gz | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"
+          echo "build_timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+
+      - name: Upload tested API source
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@v4
+        with:
+          name: genlyzer-api-${{ github.sha }}
+          path: package/genlyzer-api.tar.gz
+          if-no-files-found: error
+          retention-days: 7
+
+  attest:
+    needs: test
+    if: >-
+      github.event_name == 'push' &&
+      github.ref == 'refs/heads/main' &&
+      (
+        github.event.repository.private == false ||
+        vars.ENABLE_PRIVATE_ATTESTATIONS == 'true'
+      )
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      attestations: write
+      id-token: write
+    steps:
+      - name: Download tested API source
+        uses: actions/download-artifact@v4
+        with:
+          name: genlyzer-api-${{ github.sha }}
+          path: package
+
+      - name: Attest the API artifact
+        uses: actions/attest@v4
+        with:
+          subject-path: package/genlyzer-api.tar.gz
+
+  deploy:
+    needs:
+      - test
+      - attest
+    if: >-
+      !cancelled() &&
+      github.event_name == 'push' &&
+      github.ref == 'refs/heads/main' &&
+      needs.test.result == 'success' &&
+      (needs.attest.result == 'success' || needs.attest.result == 'skipped')
+    runs-on: ubuntu-24.04
+    environment:
+      name: production
+    permissions:
+      contents: read
+    env:
+      DEPLOY_HOST: ${{ vars.DEPLOY_HOST }}
+      DEPLOY_PORT: ${{ vars.DEPLOY_PORT }}
+      DEPLOY_USER: ${{ vars.DEPLOY_USER }}
+      DEPLOY_SSH_PRIVATE_KEY: ${{ secrets.DEPLOY_SSH_PRIVATE_KEY }}
+      DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+    steps:
+      - name: Download tested API source
+        uses: actions/download-artifact@v4
+        with:
+          name: genlyzer-api-${{ github.sha }}
+          path: package
+
+      - name: Verify artifact digest
+        env:
+          EXPECTED_DIGEST: ${{ needs.test.outputs.artifact_digest }}
+        run: |
+          set -euo pipefail
+          printf '%s  %s\n' "${EXPECTED_DIGEST#sha256:}" package/genlyzer-api.tar.gz | sha256sum --check
+
+      - name: Configure pinned SSH connection
+        run: |
+          set -euo pipefail
+          : "${DEPLOY_HOST:?Set the production environment variable DEPLOY_HOST}"
+          : "${DEPLOY_USER:?Set the production environment variable DEPLOY_USER}"
+          : "${DEPLOY_SSH_PRIVATE_KEY:?Set the production secret DEPLOY_SSH_PRIVATE_KEY}"
+          : "${DEPLOY_KNOWN_HOSTS:?Set the production secret DEPLOY_KNOWN_HOSTS}"
+          port="${DEPLOY_PORT:-22}"
+          [[ "$port" =~ ^[0-9]+$ ]] && (( port >= 1 && port <= 65535 ))
+          install -m 0700 -d "$HOME/.ssh"
+          printf '%s\n' "$DEPLOY_SSH_PRIVATE_KEY" > "$HOME/.ssh/genlyzer_api_deploy"
+          chmod 0600 "$HOME/.ssh/genlyzer_api_deploy"
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
+          chmod 0600 "$HOME/.ssh/known_hosts"
+          echo "DEPLOY_PORT_RESOLVED=$port" >> "$GITHUB_ENV"
+
+      - name: Transfer artifact and deploy
+        env:
+          ARTIFACT_DIGEST: ${{ needs.test.outputs.artifact_digest }}
+          BUILD_TIMESTAMP: ${{ needs.test.outputs.build_timestamp }}
+        run: |
+          set -euo pipefail
+          provenance_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          {
+            printf 'source_revision=%s\n' "$GITHUB_SHA"
+            printf 'artifact_digest=%s\n' "$ARTIFACT_DIGEST"
+            printf 'provenance_url=%s\n' "$provenance_url"
+            printf 'built_at=%s\n' "$BUILD_TIMESTAMP"
+          } > package/build-info
+          ssh_options=(-o BatchMode=yes -o StrictHostKeyChecking=yes \
+            -o UserKnownHostsFile="$HOME/.ssh/known_hosts" \
+            -i "$HOME/.ssh/genlyzer_api_deploy" -p "$DEPLOY_PORT_RESOLVED")
+          scp -o BatchMode=yes -o StrictHostKeyChecking=yes \
+            -o UserKnownHostsFile="$HOME/.ssh/known_hosts" \
+            -i "$HOME/.ssh/genlyzer_api_deploy" -P "$DEPLOY_PORT_RESOLVED" \
+            package/genlyzer-api.tar.gz package/build-info \
+            "$DEPLOY_USER@$DEPLOY_HOST:/var/lib/genlyzer-deploy/incoming/"
+          ssh "${ssh_options[@]}" "$DEPLOY_USER@$DEPLOY_HOST" \
+            'sudo -n /usr/local/sbin/genlyzer-api-deploy'

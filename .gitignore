@@ -11,6 +11,7 @@ api/queue_liteq/
 api/cache/
 api/logs/
 api/server.out
+swagger-ui.html
 
 /db
 *.sqlite
