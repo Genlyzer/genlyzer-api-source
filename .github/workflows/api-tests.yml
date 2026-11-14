@@ -90,8 +90,8 @@ jobs:
           mkdir -p package
           git archive --format=tar --prefix=genlyzer-api/ "$GITHUB_SHA" \
             api/server.R api/config api/helpers api/routes api/tasks api/demo-data openapi.yaml \
-            | gzip -n > package/genlyzer-api.tar.gz
-          echo "digest=sha256:$(sha256sum package/genlyzer-api.tar.gz | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"
+            | gzip -n > package/api-source.tar.gz
+          echo "digest=sha256:$(sha256sum package/api-source.tar.gz | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"
           echo "build_timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
 
       - name: Upload tested API source
@@ -99,7 +99,7 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: genlyzer-api-${{ github.sha }}
-          path: package/genlyzer-api.tar.gz
+          path: package/api-source.tar.gz
           if-no-files-found: error
           retention-days: 7
 
@@ -127,7 +127,7 @@ jobs:
       - name: Attest the API artifact
         uses: actions/attest@v4
         with:
-          subject-path: package/genlyzer-api.tar.gz
+          subject-path: package/api-source.tar.gz
 
   deploy:
     needs:
@@ -162,7 +162,7 @@ jobs:
           EXPECTED_DIGEST: ${{ needs.test.outputs.artifact_digest }}
         run: |
           set -euo pipefail
-          printf '%s  %s\n' "${EXPECTED_DIGEST#sha256:}" package/genlyzer-api.tar.gz | sha256sum --check
+          printf '%s  %s\n' "${EXPECTED_DIGEST#sha256:}" package/api-source.tar.gz | sha256sum --check
 
       - name: Configure pinned SSH connection
         run: |
@@ -199,7 +199,7 @@ jobs:
           scp -o BatchMode=yes -o StrictHostKeyChecking=yes \
             -o UserKnownHostsFile="$HOME/.ssh/known_hosts" \
             -i "$HOME/.ssh/genlyzer_api_deploy" -P "$DEPLOY_PORT_RESOLVED" \
-            package/genlyzer-api.tar.gz package/build-info \
+            package/api-source.tar.gz package/build-info \
             "$DEPLOY_USER@$DEPLOY_HOST:/var/lib/genlyzer-deploy/incoming/"
           ssh "${ssh_options[@]}" "$DEPLOY_USER@$DEPLOY_HOST" \
             'sudo -n /usr/local/sbin/genlyzer-api-deploy'
