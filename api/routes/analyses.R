@@ -1,3 +1,67 @@
+app$add_get(
+  path = "/v1/gene-sets",
+  FUN = function(request, response) {
+    organism <- request$parameters_query[["organism"]]
+    collection_value <- request$parameters_query[["collection"]]
+    parsed_collection_value <- tryCatch(
+      validate_local_gene_set_request(organism, collection_value),
+      error = function(e) {
+        raise(
+          error_bad_request(
+            "Invalid GSEA gene-set request", conditionMessage(e)
+          )
+        )
+      }
+    )
+
+    conn <- tryCatch(
+      DBI::dbConnect(
+        RSQLite::SQLite(),
+        dbname = getDatabasePath(organism),
+        flags = RSQLite::SQLITE_RO
+      ),
+      error = function(e) {
+        message(
+          "Failed to open gene-set reference database: ", conditionMessage(e)
+        )
+        raise(error_internal_error("Failed to load gene-set reference data"))
+      }
+    )
+    on.exit(DBI::dbDisconnect(conn), add = TRUE)
+
+    response_payload <- tryCatch(
+      build_local_gene_set_payload(
+        getGeneSetsAndDescriptions(
+          conn,
+          parsed_collection_value$collection,
+          parsed_collection_value$value,
+          organism
+        ),
+        organism,
+        collection_value
+      ),
+      error = function(e) {
+        message("Failed to read local GSEA gene sets: ", conditionMessage(e))
+        raise(error_internal_error("Failed to load gene-set reference data"))
+      }
+    )
+    if (length(response_payload$pathways) == 0L) {
+      raise(error_not_found(
+        "Gene-set collection unavailable",
+        "No reference gene sets were found for this organism and collection."
+      ))
+    }
+    success_response(response, response_payload)
+  }
+)
+
+app$add_route("/v1/gene-sets", method = "OPTIONS", FUN = function(req, res) {
+  res$set_header("Access-Control-Allow-Origin", "*")
+  res$set_header("Access-Control-Allow-Methods", "GET, OPTIONS")
+  res$set_header("Access-Control-Allow-Headers", CORS_ALLOWED_HEADERS)
+  res$set_header("Access-Control-Max-Age", "86400")
+})
+
 app$add_post(
   path = "/v1/analyses",
   FUN = function(request, response) {

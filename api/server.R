@@ -9,6 +9,8 @@ library(dplyr)
 library(fst)
 library(liteq)
 library(data.table)
+library(DBI)
+library(RSQLite)
 
 message("Starting Genlyzer API Server...")
 
@@ -34,6 +36,8 @@ message(sprintf(
 ))
 source("api/helpers/cors.R")
 source("api/helpers/versions.R")
+source("api/helpers/dataset_loader.R")
+source("api/helpers/gene_sets_reference.R")
 source("api/helpers/build_info.R")
 source("api/helpers/results_cache.R")
 source("api/helpers/queue_stats.R")
@@ -97,7 +101,11 @@ app$add_get(
   FUN = function(request, response) {
     versions <- tryCatch(get_versions_all(), error = function(e) {
       message("Failed to get versions")
-      list(mus_musculus = character(), homo_sapiens = character())
+      list(
+        mus_musculus = character(),
+        homo_sapiens = character(),
+        arabidopsis_thaliana = character()
+      )
     })
     success_response(response, versions)
   }
@@ -110,7 +118,11 @@ app$add_get(
   }
 )
 
-cat(sprintf("Genlyzer API Server running on port %d (API: /%s)\n", API_PORT, API_VERSION))
+cat(
+  sprintf(
+    "Genlyzer API Server running on port %d (API: /%s)\n", API_PORT, API_VERSION
+  )
+)
 if (!interactive()) {
   backend <- BackendRserve$new()
   on.exit({

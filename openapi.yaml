@@ -5,7 +5,7 @@ info:
     RESTful API for differential expression analysis and gene set enrichment analysis.
 
     Genlyzer provides tools for analyzing RNA-seq count data, performing differential
-    expression analysis using DESeq2 and Limma-Voom, conducting
+    expression analysis using DESeq2, limma-voom, or RustDESeq2, and conducting
     gene set enrichment analysis (GSEA) and over-representation analysis (ORA).
 
     All state is persisted server-side in `session_data/<analysis_id>/` directories.
@@ -67,6 +67,57 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/BuildInfoResponse'
+
+  /gene-sets:
+    get:
+      operationId: getLocalGSEAGeneSets
+      summary: Get reference gene sets for browser-local GSEA
+      description: |
+        Returns gene-set membership and annotations for one supported
+        organism and whitelisted collection. This is public reference data
+        only;
+      tags:
+        - System
+      parameters:
+        - name: organism
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [Mus musculus, Homo sapiens]
+        - name: collection
+          in: query
+          required: true
+          schema:
+            type: string
+            enum:
+              - MSigDB_GO_BP+MF+CC
+              - MSigDB_GO_BP
+              - MSigDB_Hallmark
+              - MSigDB_Reactome
+              - MSigDB_KEGG_MEDICUS
+              - MSigDB_KEGG_LEGACY
+              - MSigDB_WikiPathways
+              - MSigDB_BIOCARTA
+      responses:
+        '200':
+          description: Gene-set annotations and member Ensembl IDs
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LocalGSEAGeneSets'
+        '400':
+          description: Unsupported organism or collection
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Reference database could not be read
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /analyses:
     post:
@@ -991,7 +1042,7 @@ paths:
               properties:
                 organism:
                   type: string
-                  enum: [Mus musculus, Homo sapiens]
+                  enum: [Mus musculus, Homo sapiens, Arabidopsis thaliana]
                 padj_threshold:
                   type: number
                   default: 0.25
@@ -1067,6 +1118,11 @@ components:
           items:
             type: string
           description: Version lines for the Homo sapiens annotation database
+        arabidopsis_thaliana:
+          type: array
+          items:
+            type: string
+          description: Version lines for the Arabidopsis thaliana annotation database
 
     BuildInfoResponse:
       type: object
@@ -1230,7 +1286,7 @@ components:
       properties:
         organism:
           type: string
-          enum: [Mus musculus, Homo sapiens]
+          enum: [Mus musculus, Homo sapiens, Arabidopsis thaliana]
           description: Organism for analysis
         name_column:
           type: string
@@ -1281,7 +1337,7 @@ components:
       properties:
         organism:
           type: string
-          enum: [Mus musculus, Homo sapiens]
+          enum: [Mus musculus, Homo sapiens, Arabidopsis thaliana]
           description: Organism (used for gene annotation enrichment)
         name_column:
           type: string
@@ -1619,13 +1675,43 @@ components:
           items:
             type: number
           description: Ranking score corresponding to each gene identifier
+    LocalGSEAGeneSets:
+      type: object
+      required: [organism, collection, pathways]
+      properties:
+        organism:
+          type: string
+        collection:
+          type: string
+        pathways:
+          type: array
+          items:
+            type: object
+            required: [id, term_id, name, genes]
+            properties:
+              id:
+                type: string
+                description: External or display identifier for the gene set.
+              term_id:
+                type: string
+                description: Stable database term identifier used by GSEA.
+              name:
+                type: string
+                description: Source gene-set name, before display normalization.
+              description:
+                type: [string, "null"]
+                description: Optional longer gene-set description.
+              genes:
+                type: string
+                description: Slash-separated Ensembl gene identifiers.
     GeneSetCollection:
       type: string
       description: |
         Gene-set collection identifier used by both GSEA and ORA. Some
         collection prefixes are organism-specific: choose MGI_GO collections
-        for mouse and GOA_GO collections for human. These are GO annotations
-        from MGI and GOA, respectively; Ensembl gene records are loaded from
+        for mouse, GOA_GO collections for human and Arabidopsis, and
+        PlantReactome or WikiPathways for Arabidopsis. GO annotations come
+        from MGI and GOA respectively; Ensembl gene records are loaded from
         GTF. Collection data must be present in the selected organism's
         annotation database.
       enum:
@@ -1659,6 +1745,8 @@ components:
         - MSigDB_WikiPathways
         - MSigDB_CELL_TYPE
         - MSigDB_Hallmark
+        - PlantReactome
+        - WikiPathways
 
     ORAGeneSetCollection:
       oneOf:
