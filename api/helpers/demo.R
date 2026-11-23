@@ -8,8 +8,19 @@
 # 2) Demo sessions are public data, so their FST files (eg. for subsequent DE or Explore runs)
 # are not encrypted with a browser-held key.
 
-DEMO_COUNTS_FILE <- Sys.getenv("DEMO_COUNTS_FILE", "api/demo-data/demo_counts.xls")
+DEMO_COUNTS_FILE <- Sys.getenv("DEMO_COUNTS_FILE", "api/demo-data/demo_counts.csv")
 DEMO_SHEET_FILE <- Sys.getenv("DEMO_SHEET_FILE", "api/demo-data/demo_sample_sheet.csv")
+
+read_demo_counts <- function(path) {
+  extension <- tolower(tools::file_ext(path))
+  if (extension %in% c("xls", "xlsx")) {
+    readxl::read_excel(path)
+  } else if (extension %in% c("tsv", "txt")) {
+    utils::read.delim(path, check.names = FALSE, stringsAsFactors = FALSE)
+  } else {
+    utils::read.csv(path, check.names = FALSE, stringsAsFactors = FALSE)
+  }
+}
 
 is_demo_analysis <- function(analysis_id) {
   if (is.null(analysis_id) || length(analysis_id) != 1L ||
@@ -28,14 +39,14 @@ parse_demo_flag <- function(value) {
 
 demo_config <- function(name_column, sample_columns) {
   list(
-    organism = "Mus musculus",
+    organism = "Arabidopsis thaliana",
     name_column = name_column,
     sample_columns = as.character(sample_columns),
     de_parameters = list(
       model = "DESeq2",
       gene_filter = list(type = "filter1", min_count_sum = 10),
-      reference_samples = c("C1", "C2", "C3", "C4"),
-      comparison_samples = c("LKO1", "LKO2", "LKO3", "LKO4"),
+      reference_samples = c("control_1", "control_2", "control_3", "control_4"),
+      comparison_samples = c("treated_1", "treated_2", "treated_3", "treated_4"),
       alpha = 0.05
     )
   )
@@ -54,7 +65,7 @@ create_demo_analysis <- function() {
 
   tryCatch(
     {
-      counts_df <- readxl::read_excel(DEMO_COUNTS_FILE)
+      counts_df <- read_demo_counts(DEMO_COUNTS_FILE)
       process_count_data(counts_df, analysis_id)
 
       sheet_df <- utils::read.csv(DEMO_SHEET_FILE, stringsAsFactors = FALSE)

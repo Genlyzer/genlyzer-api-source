@@ -41,10 +41,17 @@ performORACalculation <- function(de_results_df, collection, value, organism,
       return(data.frame())
     }
 
+    kegg_organism <- if (identical(organism, "Mus musculus")) {
+      "mmu"
+    } else if (identical(organism, "Arabidopsis thaliana")) {
+      "ath"
+    } else {
+      "hsa"
+    }
     ora <- clusterProfiler::enrichKEGG(
       gene = gene_list,
       universe = universe,
-      organism = if (identical(organism, "Mus musculus")) "mmu" else "hsa",
+      organism = kegg_organism,
       pvalueCutoff = 1,
       qvalueCutoff = 1,
       minGSSize = 10,

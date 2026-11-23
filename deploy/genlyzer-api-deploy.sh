@@ -71,6 +71,7 @@ rollback() {
     --exclude='/queue_liteq/' \
     --exclude='/cache/' \
     --exclude='/logs/' \
+    --exclude='/satellites/' \
     --exclude='/server.out' \
     "$backup_dir/api/" "$APP_DIR/api/" || failed=1
   install -o root -g root -m 0644 "$backup_dir/openapi.yaml" "$APP_DIR/openapi.yaml" || failed=1
@@ -163,7 +164,7 @@ allowed_files = {
     f"{prefix}/openapi.yaml",
     f"{prefix}/api/server.R",
     f"{prefix}/api/config/database_config.R",
-    f"{prefix}/api/demo-data/demo_counts.xls",
+    f"{prefix}/api/demo-data/demo_counts.csv",
     f"{prefix}/api/demo-data/demo_sample_sheet.csv",
 }
 required_files = allowed_files | {
@@ -283,6 +284,7 @@ rsync -a \
   --exclude='/queue_liteq/' \
   --exclude='/cache/' \
   --exclude='/logs/' \
+  --exclude='/satellites/' \
   --exclude='/server.out' \
   "$APP_DIR/api/" "$backup_dir/api/"
 cp -p "$APP_DIR/openapi.yaml" "$backup_dir/openapi.yaml"
@@ -297,6 +299,7 @@ rsync -a --delete \
   --exclude='/queue_liteq/' \
   --exclude='/cache/' \
   --exclude='/logs/' \
+  --exclude='/satellites/' \
   --exclude='/server.out' \
   "$work_dir/extracted/genlyzer-api/api/" "$APP_DIR/api/"
 install -o root -g root -m 0644 \

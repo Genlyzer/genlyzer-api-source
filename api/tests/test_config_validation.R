@@ -137,6 +137,81 @@ check("valid advanced design with covariates + blocking",
         blocking_column = "patient_id"
       )))))
 
+# ---- design cleaning: constant and rank-deficient variables ------------------
+design_sheet <- data.frame(
+  sample = c("control_1", "control_2", "control_3", "control_4",
+             "treated_1", "treated_2", "treated_3", "treated_4"),
+  condition = rep(c("control", "treated"), each = 4),
+  treatment = rep(c("mock", "heat stress"), each = 4),
+  temperature_c = rep(c(22, 37), each = 4),
+  tissue = rep("rosette leaf", 8),
+  time_hours = rep(3, 8),
+  replicate = rep(1:4, 2),
+  batch = rep(c("A", "A", "B", "B"), 2),
+  stringsAsFactors = FALSE
+)
+
+confounded <- check_collinearity(
+  design_sheet, "condition", "control", "treated",
+  c("treatment", "temperature_c"), "batch"
+)
+check("condition-confounded covariates are dropped, blocking retained",
+      all(c("treatment", "temperature_c") %in% confounded$collinear) &&
+        identical(confounded$constant, character(0)) &&
+        !("batch" %in% confounded$dropped))
+
+constant <- check_collinearity(
+  design_sheet, "condition", "control", "treated",
+  c("tissue", "time_hours"), ""
+)
+check("constant covariates are reported as constant",
+      all(c("tissue", "time_hours") %in% constant$constant) &&
+        identical(constant$collinear, character(0)))
+
+redundant <- check_collinearity_with_condition(
+  design_sheet,
+  factor(design_sheet$condition, levels = c("control", "treated")),
+  c("replicate"),
+  "batch"
+)
+check("redundant covariate is dropped and blocking retained",
+      identical(redundant$collinear, "replicate") &&
+        !("batch" %in% redundant$dropped))
+
+combined <- check_collinearity(
+  design_sheet, "condition", "control", "treated",
+  c("treatment", "temperature_c", "replicate"), "batch"
+)
+check("multiple confounded covariates are all dropped, blocking retained",
+      all(c("treatment", "temperature_c", "replicate") %in% combined$collinear) &&
+        !("batch" %in% combined$dropped))
+
+# validate_config() must persist the derived drop fields, not just compute them.
+validated_config <- function(cfg, sheet = design_sheet) {
+  analysis_id <- new_analysis(sheet, write_sheet = TRUE)
+  validate_config(cfg, analysis_id)
+}
+
+validated <- validated_config(with_advanced(list(
+  condition_column = "condition",
+  reference_level = "control",
+  comparison_level = "treated",
+  covariates = list("treatment", "temperature_c", "tissue"),
+  blocking_column = "batch"
+)))
+check("validated config persists collinear + constant drops",
+      all(c("treatment", "temperature_c") %in%
+            validated$de_parameters$advanced_design$collinear_dropped) &&
+        "tissue" %in% validated$de_parameters$advanced_design$constant_dropped)
+
+validated_no_condition <- validated_config(with_advanced(list(
+  condition_column = "",
+  covariates = list("batch")
+)))
+check("validated config normalizes empty condition fields away",
+      is.null(validated_no_condition$de_parameters$advanced_design$condition_column) &&
+        is.null(validated_no_condition$de_parameters$advanced_design$reference_level))
+
 # ---- error paths ------------------------------------------------------------
 check("advanced design without sample sheet is rejected",
       identical(

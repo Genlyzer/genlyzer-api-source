@@ -90,7 +90,8 @@ validate_gene_ids <- function(gene_column) {
     ))
   }
 
-  # Check for duplicate gene IDs
+  # Check for duplicate gene IDs. Arabidopsis IDs are normalised to the
+  # canonical uppercase AGI form (without transcript suffix) before this runs.
   dup_mask <- duplicated(gene_column)
   dup_rows <- which(dup_mask)
   if (length(dup_rows) > 0) {
@@ -105,7 +106,7 @@ validate_gene_ids <- function(gene_column) {
       paste0("row ", fo + 1L, " & ", r + 1L, " (", v, ")")
     }, character(1))
     raise(error_bad_request(
-      "Duplicate ENSEMBL IDs detected",
+      "Duplicate gene IDs detected",
       truncate_values(unique(pairs)),
       meta = list(
         validation = "duplicate_gene_ids",
@@ -115,15 +116,20 @@ validate_gene_ids <- function(gene_column) {
     ))
   }
 
-  # Validate Ensembl ID format
+  # Validate gene ID format: Ensembl (mouse/human) or Arabidopsis AGI locus
   valid_ensembl <- grepl("^ENS[A-Z]+[0-9]{11}$", gene_column)
-  invalid_rows <- which(!valid_ensembl)
+  valid_agi <- grepl(
+    "^AT[1-5CM]G[0-9]{5}([.][0-9]+)?$",
+    toupper(trimws(gene_column))
+  )
+  invalid_rows <- which(!(valid_ensembl | valid_agi))
   if (length(invalid_rows) > 0) {
     invalid_values <- gene_column[invalid_rows]
     raise(error_bad_request(
-      "Invalid ENSEMBL IDs detected",
+      "Invalid gene IDs detected",
       paste(
         "Expected format: ENSXXXXXXXXXXX (e.g., ENSG00000139618)",
+        "or an Arabidopsis AGI locus code (e.g., AT1G01010)",
         "| Row numbers:", collapse_intervals(invalid_rows + 1L),
         "| Invalid values:", truncate_values(invalid_values)
       ),
@@ -261,8 +267,15 @@ process_count_data <- function(counts_data, analysis_id, key = NULL) {
     ))
   }
 
-  # Validate gene IDs in first column
-  gene_column <- counts_data[[1]]
+  # Validate gene IDs in first column. Arabidopsis AGI loci are normalised to
+  # the uppercase, version-free form used by the annotation database so that
+  # "At1g01010.1" still joins to AT1G01010.
+  gene_column <- as.character(counts_data[[1]])
+  agi_mask <- grepl("^AT[1-5CM]G[0-9]{5}([.][0-9]+)?$", toupper(trimws(gene_column)))
+  if (any(agi_mask)) {
+    gene_column[agi_mask] <- sub("[.][0-9]+$", "", toupper(trimws(gene_column[agi_mask])))
+    counts_data[[1]] <- gene_column
+  }
   validate_gene_ids(gene_column)
 
   # Validate count columns (columns 2+)

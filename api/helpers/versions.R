@@ -31,6 +31,10 @@ get_organism_versions_list <- function(db_path) {
   msig_mouse <- query_version("msigdb_version", data.frame(version_name = NA, version_date = NA))
   msig_human <- query_version("msigdb_human_version", data.frame(version_name = NA, version_date = NA))
   goa <- query_version("goa_human_version", data.frame(version = NA, date = NA))
+  goa_arabidopsis <- query_version("goa_arabidopsis_version", data.frame(version = NA, date = NA))
+  plant_reactome <- query_version("plant_reactome_version", data.frame(version = NA, date = NA))
+  wikipathways <- query_version("wikipathways_version", data.frame(version = NA, date = NA))
+  ncbi_arabidopsis <- query_version("ncbi_gene_info_version", data.frame(version = NA, date = NA))
   go <- query_version("go_version", data.frame(version = NA, date = NA))
   mgi <- query_version("mgi_version", data.frame(version = NA, date = NA))
   hgnc_mapping <- query_version(
@@ -52,6 +56,10 @@ get_organism_versions_list <- function(db_path) {
   add_line("MSigDB: ", msig_mouse, "version_name", "version_date", " | CC-BY-4.0")
   add_line("MSigDB: ", msig_human, "version_name", "version_date", " | CC-BY-4.0")
   add_line("GOA: ", goa, "version", "date", " (GOA)")
+  add_line("GOA: ", goa_arabidopsis, "version", "date", " (GOA, Arabidopsis)")
+  add_line("Plant Reactome: ", plant_reactome, "version", "date")
+  add_line("WikiPathways: ", wikipathways, "version", "date")
+  add_line("NCBI gene info: ", ncbi_arabidopsis, "version", "date")
   add_line("GO terms: ", go, "version", "date", " (GO.db)")
   add_line("MGI: ", mgi, "version", "date", " | CC BY 4.0")
   add_line("HGNC mapping: ", hgnc_mapping, "version", "date")
@@ -76,9 +84,17 @@ get_versions_all <- function() {
       character()
     }
   )
+  arabidopsis_lines <- tryCatch(
+    get_organism_versions_list(DB_ARABIDOPSIS_PATH),
+    error = function(e) {
+      message("Failed to read Arabidopsis version tables")
+      character()
+    }
+  )
 
   list(
     mus_musculus = mouse_lines,
-    homo_sapiens = human_lines
+    homo_sapiens = human_lines,
+    arabidopsis_thaliana = arabidopsis_lines
   )
 }

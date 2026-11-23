@@ -75,7 +75,8 @@ paths:
       description: |
         Returns gene-set membership and annotations for one supported
         organism and whitelisted collection. This is public reference data
-        only;
+        only. MSigDB collections are available for mouse and human; Arabidopsis
+        uses GOA and the plant pathway sources (Plant Reactome, WikiPathways).
       tags:
         - System
       parameters:
@@ -84,7 +85,7 @@ paths:
           required: true
           schema:
             type: string
-            enum: [Mus musculus, Homo sapiens]
+            enum: [Mus musculus, Homo sapiens, Arabidopsis thaliana]
         - name: collection
           in: query
           required: true
@@ -99,6 +100,12 @@ paths:
               - MSigDB_KEGG_LEGACY
               - MSigDB_WikiPathways
               - MSigDB_BIOCARTA
+              - GOA_GO_BP+MF+CC
+              - GOA_GO_BP
+              - GOA_GO_CC
+              - GOA_GO_MF
+              - PlantReactome
+              - WikiPathways
       responses:
         '200':
           description: Gene-set annotations and member Ensembl IDs
@@ -128,7 +135,8 @@ paths:
         The analysis ID must be used for all subsequent operations.
 
         With `?demo=true`, the new session is seeded from the bundled public
-        demo dataset (mouse, 8 samples: C1-C4 vs LKO1-LKO4) and is returned
+        demo dataset (Arabidopsis thaliana, 8 samples: control_1-control_4 vs
+        treated_1-treated_4) and is returned
         already configured, so its count matrix cannot be replaced. Every
         caller gets their own normal demo analysis; there is no shared demo
         session or background warmup. Demo sessions are public data, so their

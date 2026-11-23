@@ -27,9 +27,12 @@ validate_config <- function(config, analysis_id, key = NULL) {
   if (is.null(config$organism)) {
     validConfig$organism <- "Mus musculus"
   } else {
-    valid_organisms <- c("Mus musculus", "Homo sapiens")
+    valid_organisms <- c("Mus musculus", "Homo sapiens", "Arabidopsis thaliana")
     if (!(config$organism %in% valid_organisms)) {
-      raise(error_bad_request("Invalid organism", "Must be 'Mus musculus' or 'Homo sapiens'"))
+      raise(error_bad_request(
+        "Invalid organism",
+        "Must be 'Mus musculus', 'Homo sapiens' or 'Arabidopsis thaliana'"
+      ))
     }
   }
 
@@ -53,6 +56,14 @@ validate_config <- function(config, analysis_id, key = NULL) {
   } else if (config$organism == "Homo sapiens") {
     if (!all(grepl("^ENSG", count_matrix_df[[config$name_column]]))) {
       raise(error_bad_request("Invalid name_column", "For the selected organism, name_column must contain Homo sapiens Ensembl gene IDs"))
+    }
+  } else if (config$organism == "Arabidopsis thaliana") {
+    agi_ids <- toupper(trimws(as.character(count_matrix_df[[config$name_column]])))
+    if (any(is.na(agi_ids) | !grepl("^AT[1-5CM]G[0-9]{5}([.][0-9]+)?$", agi_ids))) {
+      raise(error_bad_request(
+        "Invalid name_column",
+        "For the selected organism, name_column must contain Arabidopsis thaliana AGI locus codes (e.g. AT1G01010)"
+      ))
     }
   }
 
@@ -225,10 +236,16 @@ validate_config <- function(config, analysis_id, key = NULL) {
       }
 
       if (has_condition) {
-        collinear_vars <- check_collinearity(sample_sheet, condition_column, reference_level, comparison_level, covariates, blocking_column)
-        if (length(collinear_vars$dropped) > 0) {
-        }
-        validConfig$de_parameters$advanced_design$collinear_dropped <- collinear_vars$dropped
+        design_vars <- check_collinearity(
+          sample_sheet,
+          condition_column,
+          reference_level,
+          comparison_level,
+          covariates,
+          blocking_column
+        )
+        advanced_design$collinear_dropped <- design_vars$collinear
+        advanced_design$constant_dropped <- design_vars$constant
       } else {
         # Without a condition column, check collinearity against group membership
         # of the selected reference/comparison samples.
@@ -253,20 +270,21 @@ validate_config <- function(config, analysis_id, key = NULL) {
           c(rep("Group1", length(ref_samples)), rep("Group2", length(comp_samples))),
           levels = c("Group1", "Group2")
         )
-        collinear_vars <- check_collinearity_with_condition(
+        design_vars <- check_collinearity_with_condition(
           filtered_sheet, group_condition, covariates, blocking_column
         )
-        if (length(collinear_vars$dropped) > 0) {
-        }
-        validConfig$de_parameters$advanced_design$collinear_dropped <- collinear_vars$dropped
+        advanced_design$collinear_dropped <- design_vars$collinear
+        advanced_design$constant_dropped <- design_vars$constant
       }
 
       # Normalize optional condition fields for downstream consumers
       if (!has_condition) {
-        validConfig$de_parameters$advanced_design$condition_column <- NULL
-        validConfig$de_parameters$advanced_design$reference_level <- NULL
-        validConfig$de_parameters$advanced_design$comparison_level <- NULL
+        advanced_design$condition_column <- NULL
+        advanced_design$reference_level <- NULL
+        advanced_design$comparison_level <- NULL
       }
+
+      de_parameters$advanced_design <- advanced_design
     }
 
     validConfig$de_parameters <- de_parameters
@@ -302,9 +320,12 @@ validate_explore_parameters <- function(body) {
   if (is.null(body)) raise(error_bad_request("Missing request body"))
 
   organism <- body$organism %||% "Mus musculus"
-  valid_organisms <- c("Mus musculus", "Homo sapiens")
+  valid_organisms <- c("Mus musculus", "Homo sapiens", "Arabidopsis thaliana")
   if (!(organism %in% valid_organisms)) {
-    raise(error_bad_request("Invalid organism", "Must be 'Mus musculus' or 'Homo sapiens'"))
+    raise(error_bad_request(
+      "Invalid organism",
+      "Must be 'Mus musculus', 'Homo sapiens' or 'Arabidopsis thaliana'"
+    ))
   }
 
   name_column <- body$name_column
@@ -409,71 +430,105 @@ check_collinearity <- function(sample_sheet, condition_column, reference_level, 
 }
 
 check_collinearity_with_condition <- function(sample_sheet, condition, covariates = character(0), blocking_column = "") {
-  result <- list(dropped = character(0))
+  result <- list(dropped = character(0), constant = character(0), collinear = character(0))
 
-  vars_to_check <- covariates
-  if (blocking_column != "") {
+  vars_to_check <- as.character(covariates)
+  if (length(blocking_column) == 1L && !is.na(blocking_column) && nzchar(blocking_column)) {
     vars_to_check <- unique(c(vars_to_check, blocking_column))
   }
+  vars_to_check <- vars_to_check[
+    nzchar(vars_to_check) & vars_to_check %in% names(sample_sheet) & vars_to_check != "condition"
+  ]
 
   if (length(vars_to_check) == 0) {
     return(result)
   }
 
-  for (var in vars_to_check) {
-    if (!(var %in% names(sample_sheet))) next
+  keep <- !is.na(condition)
+  if (!any(keep)) {
+    return(result)
+  }
 
-    cov_values <- sample_sheet[[var]]
-    if (length(cov_values) == 0 || all(is.na(cov_values))) next
+  condition_values <- droplevels(factor(as.character(condition[keep])))
+  if (nlevels(condition_values) < 2L) {
+    return(result)
+  }
 
-    if (length(unique(cov_values)) <= 1) next
+  sample_sheet <- sample_sheet[keep, , drop = FALSE]
 
-    is_perfectly_correlated <- FALSE
+  is_constant <- function(values) {
+    values <- values[!is.na(values)]
+    length(unique(values)) <= 1L
+  }
 
-    if (is.numeric(cov_values)) {
-      is_perfectly_correlated <- TRUE
-      for (level in levels(condition)) {
-        mask <- condition == level & !is.na(condition)
-        cov_subset <- cov_values[mask]
-        if (length(cov_subset) == 0) next
-        if (length(unique(cov_subset)) > 1) {
-          is_perfectly_correlated <- FALSE
-          break
-        }
-        const_val <- cov_subset[1]
-        if (length(levels(condition)) > 1) {
-          for (other_level in levels(condition)) {
-            if (other_level != level) {
-              other_mask <- condition == other_level & !is.na(condition)
-              if (any(cov_values[other_mask] == const_val, na.rm = TRUE)) {
-                is_perfectly_correlated <- FALSE
-                break
-              }
-            }
-          }
-        }
-        if (!is_perfectly_correlated) break
-      }
-    } else {
-      cov_factor <- factor(as.character(cov_values))
-      valid_mask <- !is.na(condition) & !is.na(cov_factor)
-      if (sum(valid_mask) == 0) next
-      cov_condition_table <- table(cov_factor[valid_mask], condition[valid_mask])
-      cov_condition_table <- cov_condition_table[rowSums(cov_condition_table) > 0, colSums(cov_condition_table) > 0, drop = FALSE]
-      if (nrow(cov_condition_table) > 0 && ncol(cov_condition_table) > 0) {
-        row_sums_binary <- rowSums(cov_condition_table > 0)
-        col_sums_binary <- colSums(cov_condition_table > 0)
-        if (all(row_sums_binary == 1) && all(col_sums_binary == 1) && nrow(cov_condition_table) == ncol(cov_condition_table)) {
-          is_perfectly_correlated <- TRUE
-        }
+  # Variables that do not vary in the selected samples cannot be estimated and
+  # would otherwise make DESeq2/limma fail with "all samples have the same
+  # value". Drop them before checking the model rank.
+  constant_vars <- vars_to_check[vapply(
+    vars_to_check, function(var) is_constant(sample_sheet[[var]]), logical(1)
+  )]
+  result$constant <- unique(constant_vars)
+  result$dropped <- unique(result$constant)
+
+  retained <- setdiff(vars_to_check, constant_vars)
+  if (length(retained) == 0) {
+    return(result)
+  }
+
+  # Coldata factors every selected design variable, so check rank
+  design <- data.frame(condition = condition_values, check.names = FALSE)
+  for (var in retained) {
+    values <- as.character(sample_sheet[[var]])
+    values[is.na(values)] <- "<NA>"
+    design[[var]] <- factor(values)
+  }
+
+  is_full_rank <- function(vars) {
+    if (length(vars) == 0) {
+      return(TRUE)
+    }
+    model_matrix <- tryCatch(
+      stats::model.matrix(
+        ~ .,
+        data = design[, c("condition", vars), drop = FALSE]
+      ),
+      error = function(e) NULL
+    )
+    !is.null(model_matrix) && qr(model_matrix)$rank == ncol(model_matrix)
+  }
+
+  # Prefer dropping covariates before the blocking column, so a paired/batch
+  # design is retained when a covariate is redundant with it.
+  candidates <- c(setdiff(retained, blocking_column), intersect(retained, blocking_column))
+  if (length(candidates) == 0) {
+    candidates <- retained
+  }
+
+  while (length(retained) > 0 && !is_full_rank(retained)) {
+    available <- candidates[candidates %in% retained]
+    dropped_one <- FALSE
+    for (candidate in available) {
+      trial <- setdiff(retained, candidate)
+      if (is_full_rank(trial)) {
+        retained <- trial
+        result$collinear <- c(result$collinear, candidate)
+        dropped_one <- TRUE
+        break
       }
     }
-
-    if (is_perfectly_correlated) {
-      result$dropped <- c(result$dropped, var)
+    if (!dropped_one) {
+      candidate <- available[1]
+      if (is.na(candidate)) {
+        break
+      }
+      retained <- setdiff(retained, candidate)
+      result$collinear <- c(result$collinear, candidate)
     }
   }
 
+  result$collinear <- unique(result$collinear)
+  result$constant <- unique(result$constant)
+  result$dropped <- unique(c(result$constant, result$collinear))
   result
 }
 
@@ -557,6 +612,12 @@ parse_collection_value <- function(collection_value) {
     value <- NULL
   } else if (collection_value == "MSigDB_WikiPathways") {
     collection <- "MSigDB_WikiPathways"
+    value <- NULL
+  } else if (collection_value == "PlantReactome") {
+    collection <- "PlantReactome"
+    value <- NULL
+  } else if (collection_value == "WikiPathways") {
+    collection <- "WikiPathways"
     value <- NULL
   } else if (collection_value == "MSigDB_CELL_TYPE") {
     collection <- "MSigDB_CELL_TYPE"

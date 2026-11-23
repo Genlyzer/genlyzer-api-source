@@ -6,8 +6,23 @@ getGeneSetsAndDescriptions <- function(con, collection, value, organism = "Mus m
     term_id = character(), term_name = character(), term_description = character(),
     external_id = character(), systematic_name = character()
   )
-  msigdb_fields <- DBI::dbListFields(con, "gene_sets_msigdb")
-  systematic_name_sql <- if ("systematic_name" %in% msigdb_fields) {
+  tables <- DBI::dbListTables(con)
+  if ("gene_sets_collections" %in% tables) {
+    collections_table <- "gene_sets_collections"
+    collections_index_prefix <- "idx_gene_sets_collections_"
+  } else {
+    stop("Gene-set collection table not found in database")
+  }
+  collections_source <- sprintf(
+    "%s INDEXED BY %s",
+    as.character(DBI::dbQuoteIdentifier(con, collections_table)),
+    as.character(DBI::dbQuoteIdentifier(
+      con,
+      paste0(collections_index_prefix, "collection_subcollection")
+    ))
+  )
+  collections_fields <- DBI::dbListFields(con, collections_table)
+  systematic_name_sql <- if ("systematic_name" %in% collections_fields) {
     "systematic_name"
   } else {
     "NULL AS systematic_name"
@@ -16,7 +31,7 @@ getGeneSetsAndDescriptions <- function(con, collection, value, organism = "Mus m
   if (organism == "Mus musculus") {
     gene_sets_table <- "gene_sets_mgi"
     go_collection <- "MGI_GO"
-  } else if (organism == "Homo sapiens") {
+  } else if (organism %in% c("Homo sapiens", "Arabidopsis thaliana")) {
     gene_sets_table <- "gene_sets_goa"
     go_collection <- "GOA_GO"
   } else {
@@ -40,19 +55,27 @@ getGeneSetsAndDescriptions <- function(con, collection, value, organism = "Mus m
     if (value == "BP+MF+CC") {
       query <- sprintf("SELECT exact_source AS term_id, ensembl_gene_id, go_name AS term_name, go_description AS term_description,
                            exact_source AS external_id, %s
-                     FROM gene_sets_msigdb INDEXED BY idx_gene_sets_msigdb_collection_subcollection
-                     WHERE collection = '%s' AND subcollection IN ('GO:BP', 'GO:MF', 'GO:CC')", systematic_name_sql, msigdb_collection)
+                     FROM %s
+                     WHERE collection = '%s' AND subcollection IN ('GO:BP', 'GO:MF', 'GO:CC')", systematic_name_sql, collections_source, msigdb_collection)
     } else if (value == "BP+MF+CC+HP") {
       query <- sprintf("SELECT exact_source AS term_id, ensembl_gene_id, go_name AS term_name, go_description AS term_description,
                            exact_source AS external_id, %s
-                     FROM gene_sets_msigdb INDEXED BY idx_gene_sets_msigdb_collection_subcollection
-                     WHERE collection = '%s'", systematic_name_sql, msigdb_collection)
+                     FROM %s
+                     WHERE collection = '%s'", systematic_name_sql, collections_source, msigdb_collection)
     } else {
       query <- sprintf("SELECT exact_source AS term_id, ensembl_gene_id, go_name AS term_name, go_description AS term_description,
                            exact_source AS external_id, %s
-                     FROM gene_sets_msigdb INDEXED BY idx_gene_sets_msigdb_collection_subcollection
-                     WHERE collection = '%s' AND subcollection = 'GO:%s'", systematic_name_sql, msigdb_collection, toupper(value))
+                     FROM %s
+                     WHERE collection = '%s' AND subcollection = 'GO:%s'", systematic_name_sql, collections_source, msigdb_collection, toupper(value))
     }
+  } else if (collection %in% c("PlantReactome", "WikiPathways")) {
+    subcollection_filter <- if (collection == "PlantReactome") "All Levels" else "WIKIPATHWAYS"
+    query <- sprintf("SELECT gene_set_id AS term_id, ensembl_gene_id, gene_set_name AS term_name,
+                          COALESCE(go_description, description) AS term_description,
+                          exact_source AS external_id, %s
+                   FROM %s
+                   WHERE collection = '%s' AND subcollection = '%s'",
+                     systematic_name_sql, collections_source, collection, subcollection_filter)
   } else if (collection %in% c("MSigDB_MP", "MSigDB_HP", "MSigDB_GTRD", "MSigDB_MIRDB", "MSigDB_BIOCARTA", "MSigDB_CELL_TYPE", "MSigDB_Reactome", "MSigDB_WikiPathways", "MSigDB_KEGG_MEDICUS", "MSigDB_PID", "MSigDB_KEGG_LEGACY", "MSigDB_CGP", "MSigDB_MIR_MIRDB", "MSigDB_MIR_MIR_LEGACY", "MSigDB_TFT_GTRD", "MSigDB_TFT_TFT_LEGACY")) {
     coll <- switch(collection,
                    MSigDB_MP = "M5",
@@ -91,16 +114,16 @@ getGeneSetsAndDescriptions <- function(con, collection, value, organism = "Mus m
     query <- sprintf("SELECT gene_set_id AS term_id, ensembl_gene_id, gene_set_name AS term_name,
                           COALESCE(go_description, description) AS term_description,
                           exact_source AS external_id, %s
-                   FROM gene_sets_msigdb INDEXED BY idx_gene_sets_msigdb_collection_subcollection
+                   FROM %s
                    WHERE collection = '%s' AND subcollection = '%s'",
-                     systematic_name_sql, coll, subcoll)
+                     systematic_name_sql, collections_source, coll, subcoll)
   } else if (collection == "MSigDB_Hallmark") {
     hallmark_collection <- if (organism == "Mus musculus") "MH" else "H"
     query <- sprintf("SELECT gene_set_id AS term_id, ensembl_gene_id, gene_set_name AS term_name,
                           COALESCE(go_description, description) AS term_description,
                           exact_source AS external_id, %s
-                   FROM gene_sets_msigdb INDEXED BY idx_gene_sets_msigdb_collection_subcollection
-                   WHERE collection = '%s'", systematic_name_sql, hallmark_collection)
+                   FROM %s
+                   WHERE collection = '%s'", systematic_name_sql, collections_source, hallmark_collection)
   } else {
     stop("Invalid collection")
   }

@@ -14,13 +14,13 @@
 # ============================================================================
 
 if (!file.exists("api/helpers/demo.R") ||
-    !file.exists("api/demo-data/demo_counts.xls") ||
+    !file.exists("api/demo-data/demo_counts.csv") ||
     !file.exists("api/demo-data/demo_sample_sheet.csv")) {
   cat("ERROR: run from the repo root (api/helpers/demo.R not found)\n")
   quit(status = 1)
 }
 
-required_packages <- c("RestRserve", "jsonlite", "dplyr", "fst", "data.table", "uuid", "readxl")
+required_packages <- c("RestRserve", "jsonlite", "dplyr", "fst", "data.table", "uuid")
 missing_packages <- required_packages[
   !vapply(required_packages, requireNamespace, logical(1), quietly = TRUE)
 ]
@@ -96,7 +96,7 @@ check("demo metadata is configured",
         isTRUE(demo$counts_uploaded))
 check("demo metadata has demo dimensions",
       identical(as.integer(demo$sample_count), 8L) &&
-        identical(as.integer(demo$gene_count), 59L))
+        identical(as.integer(demo$gene_count), 1000L))
 check("demo count/sheet/config files were seeded",
       all(file.exists(file.path(demo_dir, c(
         "count_matrix.fst", "sample_sheet.fst", "config.json", "metadata.json"
@@ -106,13 +106,17 @@ check("demo hashes recorded",
 
 cfg <- jsonlite::read_json(file.path(demo_dir, "config.json"))
 check("demo config pins the public dataset structure",
-      identical(cfg$name_column, "#NAME") &&
+      identical(cfg$organism, "Arabidopsis thaliana") &&
+        identical(cfg$name_column, "gene_id") &&
         identical(as.character(unlist(cfg$sample_columns)),
-                  c("C1", "C2", "C3", "C4", "LKO1", "LKO2", "LKO3", "LKO4")))
+                  c("control_1", "control_2", "control_3", "control_4",
+                    "treated_1", "treated_2", "treated_3", "treated_4")))
 
 sheet <- read_session_fst(file.path(demo_dir, "sample_sheet.fst"))
 check("demo sample sheet is readable without a key",
-      identical(nrow(sheet), 12L) && "condition" %in% names(sheet))
+      identical(nrow(sheet), 8L) &&
+        all(c("condition", "ecotype", "tissue", "treatment", "batch") %in%
+              names(sheet)))
 check("demo reads need no browser key",
       is.null(analysis_key_from_request(list(headers = list()), demo_id)))
 
@@ -150,9 +154,10 @@ check("private DE cache params never use the shared cache",
         !private_plan$hit)
 
 explore_params <- list(
-  organism = "Mus musculus",
-  name_column = "#NAME",
-  sample_columns = c("C1", "C2", "C3", "C4", "LKO1", "LKO2", "LKO3", "LKO4"),
+  organism = "Arabidopsis thaliana",
+  name_column = "gene_id",
+  sample_columns = c("control_1", "control_2", "control_3", "control_4",
+                     "treated_1", "treated_2", "treated_3", "treated_4"),
   explore_parameters = list(transformation = "vst", normalization = "deseq2")
 )
 explore_plan <- demo_explore_cache_params(demo, list(), explore_params)

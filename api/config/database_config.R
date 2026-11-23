@@ -1,8 +1,10 @@
 # Default database paths
 DB_MOUSE_PATH <- "db/genes_info_mouse.sqlite"
 DB_HUMAN_PATH <- "db/genes_info_human.sqlite"
+DB_ARABIDOPSIS_PATH <- "db/genes_info_arabidopsis.sqlite"
 DB_MOUSE_TEST_PATH <- "db/genes_info_mouse_test.sqlite"
 DB_HUMAN_TEST_PATH <- "db/genes_info_human_test.sqlite"
+DB_ARABIDOPSIS_TEST_PATH <- "db/genes_info_arabidopsis_test.sqlite"
 
 # Function to get database path by organism
 getDatabasePath <- function(organism) {
@@ -10,6 +12,8 @@ getDatabasePath <- function(organism) {
     DB_MOUSE_PATH
   } else if (organism == "Homo sapiens") {
     DB_HUMAN_PATH
+  } else if (organism == "Arabidopsis thaliana") {
+    DB_ARABIDOPSIS_PATH
   } else {
     stop("Unsupported organism: ", organism)
   }
@@ -21,6 +25,8 @@ getTestDatabasePath <- function(organism) {
     DB_MOUSE_TEST_PATH
   } else if (organism == "Homo sapiens") {
     DB_HUMAN_TEST_PATH
+  } else if (organism == "Arabidopsis thaliana") {
+    DB_ARABIDOPSIS_TEST_PATH
   } else {
     stop("Unsupported organism: ", organism)
   }
@@ -32,6 +38,8 @@ getProductionDatabasePath <- function(organism) {
     DB_MOUSE_PATH
   } else if (organism == "Homo sapiens") {
     DB_HUMAN_PATH
+  } else if (organism == "Arabidopsis thaliana") {
+    DB_ARABIDOPSIS_PATH
   } else {
     stop("Unsupported organism: ", organism)
   }

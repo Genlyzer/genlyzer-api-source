@@ -22,7 +22,18 @@ check <- function(description, condition) {
 request <- validate_local_gene_set_request("Mus musculus", "MSigDB_Hallmark")
 check("local GSEA accepts a supported organism and collection",
       identical(request$collection, "MSigDB_Hallmark"))
-check("local GSEA rejects unsupported organisms",
+arabidopsis_request <- validate_local_gene_set_request(
+  "Arabidopsis thaliana", "PlantReactome"
+)
+check("local GSEA accepts Arabidopsis pathway collections",
+      identical(arabidopsis_request$collection, "PlantReactome"))
+arabidopsis_go_request <- validate_local_gene_set_request(
+  "Arabidopsis thaliana", "GOA_GO_BP"
+)
+check("local GSEA accepts Arabidopsis GOA collections",
+      identical(arabidopsis_go_request$collection, "GOA_GO") &&
+        identical(arabidopsis_go_request$value, "BP"))
+check("local GSEA rejects MSigDB collections for Arabidopsis",
       inherits(try(validate_local_gene_set_request("Arabidopsis thaliana", "MSigDB_Hallmark"), silent = TRUE), "try-error"))
 check("local GSEA rejects collections outside its whitelist",
       inherits(try(validate_local_gene_set_request("Mus musculus", "MSigDB_HP"), silent = TRUE), "try-error"))

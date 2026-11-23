@@ -88,7 +88,8 @@ start_de_task <- function(ctx) {
       condition_column <- advanced_design$condition_column
       reference_level <- advanced_design$reference_level
       comparison_level <- advanced_design$comparison_level
-      covariates <- advanced_design$covariates %||% character(0)
+      original_covariates <- advanced_design$covariates %||% character(0)
+      covariates <- original_covariates
       blocking_column <- advanced_design$blocking_column %||% ""
       has_condition <- !is.null(condition_column) && nzchar(condition_column)
 
@@ -121,9 +122,13 @@ start_de_task <- function(ctx) {
         condition <- factor(condition, levels = c(reference_level, comparison_level))
       }
 
-      # Check for collinearity, and drop the selected covariates and blocking column if necessary
+      # Check for constant and collinear design variables, and drop them before
+      # building coldata so the model is always fit with a full-rank design.
       dropped_covariates <- character(0)
+      constant_dropped <- character(0)
+      collinear_dropped <- character(0)
       dropped_blocking <- NULL
+      dropped_blocking_reason <- NULL
       if (length(covariates) > 0 || (blocking_column != "" && !is.null(blocking_column))) {
         filtered_sheet <- sample_sheet[match(selected_samples, sample_sheet[[sample_id_col]]), , drop = FALSE]
 
@@ -143,14 +148,21 @@ start_de_task <- function(ctx) {
         }
 
         dropped_all <- corr_result$dropped
+        constant_all <- corr_result$constant %||% character(0)
+        collinear_all <- corr_result$collinear %||% character(0)
+
         # Separate blocking column drops from covariate drops
         if (blocking_column != "" && blocking_column %in% dropped_all) {
           dropped_blocking <- blocking_column
+          dropped_blocking_reason <- if (blocking_column %in% constant_all) "constant" else "collinear"
           blocking_column <- NULL
         }
+
         # Remove ALL dropped variables from covariates (including ones that were also the blocking column)
         covariates <- setdiff(covariates, dropped_all)
-        dropped_covariates <- setdiff(dropped_all, dropped_blocking)
+        dropped_covariates <- setdiff(original_covariates, covariates)
+        constant_dropped <- intersect(dropped_covariates, constant_all)
+        collinear_dropped <- intersect(dropped_covariates, collinear_all)
       }
 
       coldata <- buildColdataFromSampleSheet(
@@ -172,13 +184,21 @@ start_de_task <- function(ctx) {
       de_summary$condition_column <- if (has_condition) condition_column else "condition"
       de_summary$reference_level <- reference_level
       de_summary$comparison_level <- comparison_level
+      if (length(original_covariates) > 0) {
+        de_summary$original_covariates <- original_covariates
+      }
       if (length(dropped_covariates) > 0) {
         de_summary$dropped_covariates <- dropped_covariates
-        de_summary$original_covariates <- advanced_design$covariates %||% character(0)
-        de_summary$collinear_dropped <- dropped_covariates
+      }
+      if (length(constant_dropped) > 0) {
+        de_summary$constant_dropped <- constant_dropped
+      }
+      if (length(collinear_dropped) > 0) {
+        de_summary$collinear_dropped <- collinear_dropped
       }
       if (!is.null(dropped_blocking)) {
         de_summary$dropped_blocking_column <- dropped_blocking
+        de_summary$dropped_blocking_reason <- dropped_blocking_reason
       }
     } else {
       coldata <- prepare_coldata(reference_samples, comparison_samples)

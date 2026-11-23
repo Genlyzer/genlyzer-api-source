@@ -74,6 +74,20 @@ check("mouse Ensembl pattern",
 check("human Ensembl pattern",
       identical(correlation_id_pattern("Homo sapiens"),
                 "^ENSG[0-9]+([.][0-9]+)?$"))
+check("arabidopsis AGI pattern",
+      identical(correlation_id_pattern("Arabidopsis thaliana"),
+                "^AT[1-5CM]G[0-9]{5}([.][0-9]+)?$"))
+check("parses PlantReactome collection",
+      identical(parse_collection_value("PlantReactome"),
+                list(collection = "PlantReactome", value = NULL)))
+check("parses WikiPathways collection",
+      identical(parse_collection_value("WikiPathways"),
+                list(collection = "WikiPathways", value = NULL)))
+check("accepts Arabidopsis AGI count-matrix gene IDs",
+      is.null(try(validate_gene_ids(c("AT1G01010", "at1g01020.1")), silent = TRUE)))
+check("rejects malformed count-matrix gene IDs",
+      inherits(try(validate_gene_ids(c("AT1G01010", "not-a-gene")), silent = TRUE),
+               "try-error"))
 check("unsupported organism raises",
       inherits(try(correlation_id_pattern("Rattus norvegicus"), silent = TRUE),
                "try-error"))
@@ -125,6 +139,35 @@ check("metadata organism is preferred over config",
       ))
 check("config organism is used when metadata lacks it",
       identical(analysis_organism(analysis, analysis_id), "Mus musculus"))
+
+# Arabidopsis fixture: lowercase AGI IDs with a transcript suffix are normalised
+# to the uppercase, version-free form stored in the annotation database.
+ath_analysis_id <- "ora-test-arabidopsis"
+ath_session_dir <- file.path(SESSION_DATA_DIR, ath_analysis_id)
+dir.create(ath_session_dir, recursive = TRUE)
+ath_genes <- c("AT1G01010", "AT1G01020", "AT2G01010")
+write_session_fst(
+  data.frame(gene_id = ath_genes, stringsAsFactors = FALSE),
+  file.path(ath_session_dir, "explore_results.fst")
+)
+jsonlite::write_json(
+  list(organism = "Arabidopsis thaliana"),
+  file.path(ath_session_dir, "config.json"),
+  auto_unbox = TRUE
+)
+ath_analysis <- list(analysis_id = ath_analysis_id)
+ath_body <- list(
+  collection = "GOA_GO_BP",
+  correlation_padj_threshold = 0.05,
+  padj_threshold = 0.1,
+  correlation_gene_ids = c("at1g01010.1", "AT2G01010"),
+  correlation_padj_values = c(0.01, 0.2)
+)
+ath_task <- prepare_correlation_ora(ath_body, ath_analysis, ath_analysis_id, NULL)
+check("normalises Arabidopsis AGI IDs for correlation ORA",
+      identical(ath_task$universe, c("AT1G01010", "AT2G01010")))
+check("selects significant Arabidopsis correlation genes",
+      identical(ath_task$gene_list, "AT1G01010"))
 
 # ---- error paths ------------------------------------------------------------
 check_raises <- function(desc, expr) {

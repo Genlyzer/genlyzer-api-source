@@ -66,9 +66,12 @@ correlation_id_pattern <- function(organism) {
   if (identical(organism, "Mus musculus")) {
     return("^ENSMUSG[0-9]+([.][0-9]+)?$")
   }
+  if (identical(organism, "Arabidopsis thaliana")) {
+    return("^AT[1-5CM]G[0-9]{5}([.][0-9]+)?$")
+  }
   raise(error_unprocessable(
     "Unsupported organism",
-    "Correlation ORA supports human and mouse analyses."
+    "Correlation ORA supports human, mouse and Arabidopsis analyses."
   ))
 }
 
@@ -108,14 +111,18 @@ read_explore_gene_ids <- function(analysis, analysis_id, session_key) {
 prepare_correlation_ora <- function(body, analysis, analysis_id, session_key) {
   request <- validate_correlation_ora_request(body)
 
-  id_pattern <- correlation_id_pattern(
-    analysis_organism(analysis, analysis_id)
-  )
-  if (any(!grepl(id_pattern, request$correlation_gene_ids))) {
+  organism <- analysis_organism(analysis, analysis_id)
+  id_pattern <- correlation_id_pattern(organism)
+  if (any(!grepl(id_pattern, toupper(request$correlation_gene_ids)))) {
     raise(error_bad_request(
       "Invalid gene identifiers",
-      "Correlation ORA requires Ensembl gene IDs matching the analysis organism."
+      "Correlation ORA requires gene identifiers matching the analysis organism (Ensembl IDs or Arabidopsis AGI locus codes)."
     ))
+  }
+  if (identical(organism, "Arabidopsis thaliana")) {
+    request$correlation_gene_ids <- sub(
+      "[.][0-9]+$", "", toupper(trimws(request$correlation_gene_ids))
+    )
   }
 
   explored_gene_ids <- read_explore_gene_ids(analysis, analysis_id, session_key)

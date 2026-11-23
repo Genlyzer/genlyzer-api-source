@@ -1,24 +1,48 @@
-LOCAL_GSEA_ORGANISMS <- c("Mus musculus", "Homo sapiens")
-LOCAL_GSEA_COLLECTIONS <- c(
-  "MSigDB_GO_BP+MF+CC",
-  "MSigDB_GO_BP",
-  "MSigDB_Hallmark",
-  "MSigDB_Reactome",
-  "MSigDB_KEGG_MEDICUS",
-  "MSigDB_KEGG_LEGACY",
-  "MSigDB_WikiPathways",
-  "MSigDB_BIOCARTA"
+LOCAL_GSEA_COLLECTIONS <- list(
+  "Mus musculus" = c(
+    "MSigDB_GO_BP+MF+CC",
+    "MSigDB_GO_BP",
+    "MSigDB_Hallmark",
+    "MSigDB_Reactome",
+    "MSigDB_KEGG_MEDICUS",
+    "MSigDB_KEGG_LEGACY",
+    "MSigDB_WikiPathways",
+    "MSigDB_BIOCARTA"
+  ),
+  "Homo sapiens" = c(
+    "MSigDB_GO_BP+MF+CC",
+    "MSigDB_GO_BP",
+    "MSigDB_Hallmark",
+    "MSigDB_Reactome",
+    "MSigDB_KEGG_MEDICUS",
+    "MSigDB_KEGG_LEGACY",
+    "MSigDB_WikiPathways",
+    "MSigDB_BIOCARTA"
+  ),
+  "Arabidopsis thaliana" = c(
+    "GOA_GO_BP+MF+CC",
+    "GOA_GO_BP",
+    "GOA_GO_CC",
+    "GOA_GO_MF",
+    "PlantReactome",
+    "WikiPathways"
+  )
 )
+LOCAL_GSEA_ORGANISMS <- names(LOCAL_GSEA_COLLECTIONS)
 
 validate_local_gene_set_request <- function(organism, collection_value) {
   if (is.null(organism) || length(organism) != 1L ||
         !is.character(organism) || !organism %in% LOCAL_GSEA_ORGANISMS) {
-    stop("Organism must be 'Mus musculus' or 'Homo sapiens'.")
+    stop(
+      "Organism must be one of: ",
+      paste(LOCAL_GSEA_ORGANISMS, collapse = ", "), "."
+    )
   }
+  allowed_collections <- LOCAL_GSEA_COLLECTIONS[[organism]]
   if (
     is.null(collection_value) || length(collection_value) != 1L ||
       !is.character(collection_value) ||
-      !collection_value %in% LOCAL_GSEA_COLLECTIONS
+      !collection_value %in% allowed_collections
   ) {
     stop("The selected gene-set collection is not available for local GSEA.")
   }

@@ -22,7 +22,8 @@ save_de_results <- function(analysis_id, de_result, key = NULL) {
   }
   if (!is.null(de_result$de_summary)) {
     ds <- de_result$de_summary
-    for (f in c("covariates", "dropped_covariates", "original_covariates", "collinear_dropped")) {
+    for (f in c("covariates", "dropped_covariates", "original_covariates",
+                "collinear_dropped", "constant_dropped")) {
       if (!is.null(ds[[f]])) ds[[f]] <- I(as.character(unlist(ds[[f]])))
     }
     de_summary_path <- file.path(current_analysis_dir, "de_summary.json")
